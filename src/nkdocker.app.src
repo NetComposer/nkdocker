@@ -1,0 +1,18 @@
+{application, nkdocker, [
+    {description, "NkDOCKER Docker Interface"},
+    {vsn, "0.1.0"},
+    {modules, []},
+    {registered, []},
+    {mod, {nkdocker_app, []}},
+    {applications, [
+        kernel,
+        stdlib,
+        crypto,
+        sasl,
+        ssl,
+        lager,
+        nkpacket
+    ]},
+    {env, [
+    ]}
+]}.
