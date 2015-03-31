@@ -10,6 +10,6 @@ NkDOCKER is a native, 100% Erlang [Docker](https://www.docker.com) client, using
 
 NkDOCKER needs Erlang >= 17.
 
-While more documentation is available, look at [this file](test/basic_test.erl) for a complete example of use
+While more documentation is available, look at [this file](test/basic_test.erl) for a complete example of use. For it to work, define the DOCKER_HOST, DOCKER_CERT_PATH and DOCKER_TLS environment variables.
 
 
