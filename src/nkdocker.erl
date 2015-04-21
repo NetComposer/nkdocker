@@ -40,7 +40,6 @@
 	     exec_resize/4]).
 -import(nklib_util, [to_binary/1]).
 
--type text() :: string() | binary().
 
 -define(HUB, <<"https://index.docker.io/v1/">>).
 -define(TIMEOUT, 180000).
@@ -50,6 +49,8 @@
 %% ===================================================================
 %% Types
 %% ===================================================================
+
+-type text() :: string() | binary().
 
 -type conn_opts() ::
 	#{	
@@ -92,6 +93,7 @@
 		expose => [docker_port()],
 		hostname => text(),
 		interactive => boolean(),
+		labels => [{Key::text(), Val::text()}],
 		links => [{Cont::text(), Alias::text()}],	
 		lxc_confs => [{text(), text()}],
 		mac_address => text(),
@@ -168,7 +170,8 @@ finish_async(Pid, Ref) ->
 %% ===================================================================
 
 
-%% @doc Shows docker daemon version
+%% @doc Shows docker daemon version.
+%% It tries to reuse a previous connection.
 -spec version(pid()) ->
 	{ok, map()} | {error, error()}.
 
@@ -176,7 +179,8 @@ version(Pid) ->
 	get(Pid, <<"/version">>, #{}).
 
 
-%% @doc Gets info about the docker daemon
+%% @doc Gets info about the docker daemon.
+%% It tries to reuse a previous connection.
 -spec info(pid()) ->
 	{ok, map()} | {error, error()}.
 
@@ -184,7 +188,8 @@ info(Pid) ->
 	get(Pid, <<"/info">>, #{}).
 
 
-%% @doc Pings to the the docker daemon
+%% @doc Pings to the the docker daemon.
+%% It tries to reuse a previous connection.
 -spec ping(pid()) ->
 	{ok, map()} | {error, error()}.
 
@@ -224,7 +229,8 @@ events(Pid) ->
 
 events(Pid, Opts) ->
 	Path = make_path(<<"/events">>, get_filters(Opts), [filters, since, until]),
-	get(Pid, Path, Opts#{async=>true, force_new=>true, refresh=>5000}).
+	Opts1 = Opts#{async=>true, force_new=>true, idle_timeout=>5000, refresh=>true},
+	get(Pid, Path, Opts1).
 
 
 %% @doc Equivalent to login(Pid, User, Pass, Email, ?HUB)
@@ -266,7 +272,8 @@ ps(Pid) ->
 	ps(Pid, #{}).
 
 
-%% @doc List containers
+%% @doc List containers.
+%% It tries to reuse a previous connection.
  -spec ps(pid(), 
 	#{
 		all => boolean(),				%
@@ -301,7 +308,8 @@ create(Pid, Image, Opts) ->
 	end.
 
 
-%% @doc Inspect a container
+%% @doc Inspect a container.
+%% It tries to reuse a previous connection.
 -spec inspect(pid(), text()) ->
 	{ok, map()} | {error, error()}.
 
@@ -318,7 +326,8 @@ top(Pid, Container) ->
 	top(Pid, Container, #{}).
 
 
-%% @doc List processes running inside a container
+%% @doc List processes running inside a container.
+%% It tries to reuse a previous connection.
 -spec top(pid(), text(), #{ps_args=>text()}) ->
 	{ok, map()} | {error, error()}.
 
@@ -360,7 +369,7 @@ logs(Pid, Container, Opts) ->
 	Path2 = make_path(Path1, Opts, UrlOpts),
 	case Opts of 
 		#{follow:=true} ->
-			get(Pid, Path2, #{async=>true, refresh=>5000});
+			get(Pid, Path2, #{async=>true, idle_timeout=>5000, refresh=>true});
 		#{async:=true} ->
 			get(Pid, Path2, #{async=>true});
 		_ ->
@@ -368,7 +377,8 @@ logs(Pid, Container, Opts) ->
 	end.
 
 
-%% @doc Inspect changes on a container's filesystem
+%% @doc Inspect changes on a container's filesystem.
+%% It tries to reuse a previous connection.
 -spec diff(pid(), text()) ->
 	{ok, [map()]} | {error, error()}.
 
@@ -377,7 +387,7 @@ diff(Pid, Container) ->
 	get(Pid, Path, #{}).
 
 
-%% @doc Export the contents of container id to a TAR file
+%% @doc Export the contents of container id to a TAR file.
 -spec export(pid(), text(), text()) ->
 	ok | {error, error()}.
 
@@ -390,18 +400,19 @@ export(Pid, Container, File) ->
 	end.
 
 
-%% @doc Get container stats based on resource usage
-%% A reference and connection pid will be returned (see events/2)
+%% @doc Get container stats based on resource usage.
+%% A reference and connection pid will be returned (see events/2).
 -spec stats(pid(), text()) ->
 	{ok, reference(), pid()} | {error, error()}.
 
 stats(Pid, Container) ->
 	Path = list_to_binary([<<"/containers/">>, Container, <<"/stats">>]),
-	get(Pid, Path, #{async=>true, refresh=>5000}).
+	get(Pid, Path, #{async=>true, idle_timeout=>5000}).
 
 
 %% @doc Resize the TTY for container with id. 
 %% The container must be restarted for the resize to take effect.
+%% It tries to reuse a previous connection.
 -spec resize(pid(), text(), integer(), integer()) ->
 	ok | {error, error()}.
 
@@ -435,7 +446,7 @@ stop(Pid, Container) ->
 
 
 %% @doc Stops a container
-%% Can specify the maximum time (in seconds) before killing it
+%% Can specify the maximum time (in seconds) before killing it.
 -spec stop(pid(), text(), #{t=>pos_integer()}) ->
 	ok | {error, error()}.
 
@@ -494,7 +505,8 @@ kill(Pid, Container, Opts) ->
 	end.
 
 
-%% @doc Rename a container with a new name
+%% @doc Rename a container with a new name.
+%% It tries to reuse a previous connection.
 -spec rename(pid(), text(), text()) ->
 	ok | {error, error()}.
 
@@ -507,7 +519,8 @@ rename(Pid, Id, Name) ->
 	end.
 
 
-%% @doc Pause a container
+%% @doc Pause a container.
+%% It tries to reuse a previous connection.
 -spec pause(pid(), text()) ->
 	ok | {error, error()}.
 
@@ -519,7 +532,8 @@ pause(Pid, Container) ->
 	end.
 
 
-%% @doc Unpause a container
+%% @doc Unpause a container.
+%% It tries to reuse a previous connection.
 -spec unpause(pid(), text()) ->
 	ok | {error, error()}.
 
@@ -655,7 +669,8 @@ images(Pid) ->
 	images(Pid, #{}).
 
 
-%% @doc List images
+%% @doc List images.
+%% It tries to reuse a previous connection.
 -spec images(pid(), 
 	#{
 		all => boolean(),
@@ -751,6 +766,7 @@ create_image(Pid, Opts) ->
 
 
 %% @doc Inspect an image
+%% It tries to reuse a previous connection.
 -spec inspect_image(pid(), text()) ->
 	{ok, map()} | {error, error()}.
 
@@ -759,7 +775,8 @@ inspect_image(Pid, Id) ->
 	get(Pid, Path2, #{}).
 
 
-%% @doc Return the history of the image
+%% @doc Return the history of the image.
+%% It tries to reuse a previous connection.
 -spec history(pid(), text()) ->
 	{ok, [map()]} | {error, error()}.
 
@@ -799,7 +816,8 @@ push(Pid, Name, Opts) ->
 	post(Pid, Path2, PostOpts2).
 
 
-%% @doc Tag an image into a repository
+%% @doc Tag an image into a repository.
+%% It tries to reuse a previous connection.
 -spec tag(pid(), text(),
 	#{
 		repo => text(),				% The repository to tag in
@@ -856,7 +874,8 @@ rmi(Pid, Image) ->
 	rmi(Pid, Image, #{}).
 
 
-%% @doc Removes an image
+%% @doc Removes an image.
+%% It tries to reuse a previous connection.
 -spec rmi(pid(), text(), 
 	#{
 		force => boolean(),
@@ -1005,7 +1024,8 @@ exec_start(Pid, Id, Opts) ->
 	end.
 
 
-%% @doc Return low-level information about the exec command
+%% @doc Return low-level information about the exec command.
+%% It tries to reuse a previous connection.
 -spec exec_inspect(pid(), text()) ->
 	{ok, binary()} | {error, error()}.
 
@@ -1017,6 +1037,7 @@ exec_inspect(Pid, Id) ->
 %% @doc Resizes the tty session used by the exec command id. 
 %% This API is valid only if tty was specified as part of creating 
 %% and starting the exec command.
+%% It tries to reuse a previous connection.
 -spec exec_resize(pid(), text(), integer(), integer()) ->
 	ok | {error, error()}.
 

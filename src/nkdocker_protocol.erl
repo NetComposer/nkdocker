@@ -18,7 +18,7 @@
 %%
 %% -------------------------------------------------------------------
 
-%% @doc TEST Protocol behaviour
+%% @doc Protocol behaviour
 -module(nkdocker_protocol).
 -author('Carlos Gonzalez <carlosj.gf@gmail.com>').
 -behaviour(nkpacket_protocol).
@@ -27,8 +27,6 @@
 -export([conn_init/1, conn_parse/2, conn_unparse/2]).
 
 -include_lib("nklib/include/nklib.hrl").
--include_lib("nkpacket/include/nkpacket.hrl").
-
 
 -record(state, {
 	nkport :: nkpacket:nkport(),
@@ -57,7 +55,8 @@ transports(_) -> [tls].
 -spec conn_init(nkpacket:nkport()) ->
 	#state{}.
 
-conn_init(#nkport{meta=#{notify:=Pid}}=NkPort) ->
+conn_init(NkPort) ->
+	{ok, {notify, Pid}} = nkpacket:get_user(NkPort),
 	% lager:notice("Protocol CONN init: ~p (~p)", [NkPort, self()]),
 	#state{nkport=NkPort, notify=Pid}.
 
@@ -237,25 +236,4 @@ handle_head(Data, State) ->
 		_ -> State#state{in={body, Remaining}}
 	end,
 	{reply, {head, Ref, Status, Headers, Remaining==0}, Rest2, State1}.
-
-
-
-
-
-
-%% ===================================================================
-%% Util
-%% ===================================================================
-
-
-% maybe_reply(Msg, #listen_state{pid=Pid, ref=Ref}) when is_pid(Pid) -> Pid ! {Ref, Msg};
-% maybe_reply(Msg, #state{pid=Pid, ref=Ref}) when is_pid(Pid) -> Pid ! {Ref, Msg};
-% maybe_reply(_, _) -> ok.
-
-
-
-
-
-
-
 

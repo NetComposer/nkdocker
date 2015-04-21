@@ -95,7 +95,7 @@ get_config() ->
     end,
     case map_size(ConnOpts3) of
         0 -> ok;
-        _ -> lager:notice("NkDOCKER Enc Config: ~p", [ConnOpts3])
+        _ -> lager:notice("Detected Config: ~p", [ConnOpts3])
     end,
     application:set_env(?APP, conn_config, ConnOpts3).
 

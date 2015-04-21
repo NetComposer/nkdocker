@@ -26,12 +26,11 @@ eunit:
 	./rebar eunit skip_deps=true
 
 shell:
-	erl -config util/shell_app.config -args_file util/shell_vm.args -s nkdocker_app
+	erl -config util/shell_app.config -args_file util/shell_vm.args -s nkdocker_app -s reloader
 
 
 docs:
 	./rebar skip_deps=true doc
-	@cp -R apps/riak_core/doc doc/riak_core
 
 
 APPS = kernel stdlib sasl erts ssl tools os_mon runtime_tools crypto inets \

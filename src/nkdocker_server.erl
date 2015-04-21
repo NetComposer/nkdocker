@@ -26,9 +26,9 @@
 -export([start_link/1, start/1, stop/1, cmd/5, data/3, finish/2]).
 -export([init/1, terminate/2, code_change/3, handle_call/3, handle_cast/2, 
          handle_info/2]).
+-export([refresh_fun/1]).
 -export_type([cmd_opts/0]).
 
--include_lib("nkpacket/include/nkpacket.hrl").
 -include("nkdocker.hrl").
 
 -type cmd_opts() :: 
@@ -38,10 +38,11 @@
         headers => [{binary(), binary}],
         redirect => string(),           % Send to file
         timeout => pos_integer(),       % Reply and closes connection if reached
-        refresh => pos_integer()        % Automatic refresh
+        refresh => boolean()            % Automatic refresh
     }.
 
--define(TIMEOUT, 180000).
+-define(CALL_TIMEOUT, 60000).
+-define(CONN_TIMEOUT, 180000).
 
 
 %% ===================================================================
@@ -79,8 +80,8 @@ stop(Pid) ->
     term().
 
 cmd(Pid, Verb, Path, Body, Opts) ->
-    Path1 = <<"/v1.17", Path/binary>>,
-    gen_server:call(Pid, {cmd, Verb, Path1, Body, Opts}, infinity).
+    % Path1 = <<"/v1.17", Path/binary>>,
+    gen_server:call(Pid, {cmd, Verb, Path, Body, Opts}, ?CALL_TIMEOUT).
 
 
 %% @doc Sends a in-message data
@@ -88,7 +89,7 @@ cmd(Pid, Verb, Path, Body, Opts) ->
     ok | {error, term()}.
 
 data(Pid, Ref, Data) ->
-    gen_server:call(Pid, {data, {self(), Ref}, Data}, infinity).
+    gen_server:call(Pid, {data, {self(), Ref}, Data}, ?CALL_TIMEOUT).
 
 
 %% @doc Finished an asynchronous command
@@ -96,7 +97,15 @@ data(Pid, Ref, Data) ->
     {ok, pid()} | {error, term()}.
 
 finish(Pid, Ref) ->
-    gen_server:call(Pid, {finish, {self(), Ref}}, infinity).
+    gen_server:call(Pid, {finish, {self(), Ref}}, ?CALL_TIMEOUT).
+
+
+%% @private
+refresh_fun(NkPort) ->
+    case nkpacket_connection:send(NkPort, <<"\r\n">>) of
+        ok -> true;
+        _ -> false
+    end.
 
 
 
@@ -114,8 +123,7 @@ finish(Pid, Ref) ->
     headers = [] :: [{binary(), binary()}],
     body = <<>> :: binary(),
     chunked :: boolean(),
-    user_ref :: reference(),
-    refresh :: reference()
+    user_mon :: reference()
 }).
 
 -record(state, {
@@ -130,17 +138,21 @@ finish(Pid, Ref) ->
     {ok, #state{}} | {stop, term()}.
 
 init([Opts]) ->
-    process_flag(trap_exit, true),
+    process_flag(trap_exit, true),      %% Allow calls to terminate/2
     EnvConfig = application:get_env(nkdocker, conn_config, #{}),
     Opts1 = maps:merge(EnvConfig, Opts),
     Host = maps:get(host, Opts1, "127.0.0.1"),
-    Port = maps:get(port, Opts1, 2376),
+    Port = maps:get(port, Opts1, 2375),
     Proto = maps:get(proto, Opts1, tcp),
     case nkpacket_dns:get_ips(nkdocker, Host) of
         [Ip] ->
             Conn = {nkdocker_protocol, Proto, Ip, Port},
             Opts2 = maps:with([certfile, keyfile, idle_timeout], Opts1),
-            ConnOpts = Opts2#{link=>self(), notify=>self(), idle_timeout=>?TIMEOUT},
+            ConnOpts = Opts2#{
+                monitor => self(), 
+                user => {notify, self()}, 
+                idle_timeout => ?CONN_TIMEOUT
+            },
             case nkpacket:connect({nkdocker, self()}, Conn, ConnOpts) of
                 {ok, _} ->
                     State = #state{
@@ -251,16 +263,16 @@ handle_info({nkdocker, {data, From, Data, Last}}, State) ->
     State1 = parse_data(From, Data, Last, State),
     {noreply, State1};
 
-handle_info({timeout, _, {async, From, Refresh}}, #state{cmds=Cmds}=State) ->
-    case lists:keyfind(From, #cmd.from, Cmds) of
-        #cmd{conn_pid=ConnPid}=Cmd ->
-            spawn(fun() -> nkpacket_connection:send(ConnPid, <<"\r\n">>) end),
-            Cmd1 = Cmd#cmd{refresh=start_timer(From, Refresh)},
-            Cmds1 = lists:keystore(From, #cmd.from, Cmds, Cmd1),
-            {noreply, State#state{cmds=Cmds1}};
-        false ->
-            {noreply, State}
-    end;
+% handle_info({timeout, _, {async, From, Refresh}}, #state{cmds=Cmds}=State) ->
+%     case lists:keyfind(From, #cmd.from, Cmds) of
+%         #cmd{conn_pid=ConnPid}=Cmd ->
+%             spawn(fun() -> nkpacket_connection:send(ConnPid, <<"\r\n">>) end),
+%             Cmd1 = Cmd#cmd{refresh=start_timer(From, Refresh)},
+%             Cmds1 = lists:keystore(From, #cmd.from, Cmds, Cmd1),
+%             {noreply, State#state{cmds=Cmds1}};
+%         false ->
+%             {noreply, State}
+%     end;
 
 handle_info({'DOWN', MRef, process, _MPid, _Reason}, #state{cmds=Cmds}=State) ->
     case lists:keyfind(MRef, #cmd.conn_ref, Cmds) of
@@ -276,7 +288,7 @@ handle_info({'DOWN', MRef, process, _MPid, _Reason}, #state{cmds=Cmds}=State) ->
                     {noreply, do_stop(Cmd, {error, connection_stopped}, State)}
             end;
         false ->
-            case lists:keyfind(MRef, #cmd.user_ref, Cmds) of
+            case lists:keyfind(MRef, #cmd.user_mon, Cmds) of
                 #cmd{}=Cmd ->
                     {noreply, do_stop(Cmd, none, State)};
                 false ->
@@ -378,9 +390,14 @@ send(Method, Path, Body, Opts, From, State) ->
         #{timeout:=Timeout} -> ConnOpts1#{idle_timeout=>Timeout};
         _ -> ConnOpts1
     end,
+    ConnOpts3 = case Opts of
+        #{refresh:=true} -> ConnOpts2#{refresh_fun=>fun refresh_fun/1};
+        _ -> ConnOpts2
+    end,
     % lager:warning("SEND: ~p", [Msg]),
-    case nkpacket:send({nkdocker, Id}, Conn, Msg, ConnOpts2) of
-        {ok, #nkport{pid=ConnPid}} ->
+    case nkpacket:send({nkdocker, Id}, Conn, Msg, ConnOpts3) of
+        {ok, NkPort} ->
+            ConnPid = nkpacket:get_pid(NkPort),
             Cmd1 = #cmd{
                 from = From, 
                 conn_pid = ConnPid,
@@ -389,14 +406,8 @@ send(Method, Path, Body, Opts, From, State) ->
             },
             Cmd2 = case Mode of
                 async ->
-                    Timer = case Opts of
-                        #{refresh:=Refresh} -> start_timer(From, Refresh);
-                        _ -> undefined
-                    end,
-                    Cmd1#cmd{
-                        user_ref = erlang:monitor(process, element(1, From)),
-                        refresh = Timer
-                    };
+                    UserMon = erlang:monitor(process, element(1, From)),
+                    Cmd1#cmd{user_mon=UserMon};
                 _ ->
                     Cmd1
             end,
@@ -580,14 +591,12 @@ do_stop(Cmd, Msg, #state{cmds=Cmds}=State) ->
         conn_pid = ConnPid, 
         conn_ref = ConnRef,
         mode = Mode,
-        user_ref = UserRef,
-        refresh = Refresh
+        user_mon = UserMon
     } = Cmd,
     case Mode of  
         async ->
-            nklib_util:cancel_timer(Refresh),
             erlang:demonitor(ConnRef),
-            erlang:demonitor(UserRef),
+            erlang:demonitor(UserMon),
             nkpacket_connection:stop(ConnPid, normal),
             Pid ! {nkdocker, Ref, Msg};
         shared -> 
@@ -605,11 +614,4 @@ do_stop(Cmd, Msg, #state{cmds=Cmds}=State) ->
     Cmds1 = lists:keydelete(From, #cmd.from, Cmds),
     State#state{cmds=Cmds1}.
 
-
-%% @private
--spec start_timer({pid(), reference()}, integer()) ->
-    reference().
-
-start_timer(From, Refresh) ->
-    erlang:start_timer(Refresh, self(), {async, From, Refresh}).
 

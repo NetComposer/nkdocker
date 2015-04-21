@@ -28,32 +28,32 @@
 
 -define(RECV(M), receive M -> ok after 1000 -> error(?LINE) end).
 
-basic_test_() ->
-  	{setup, spawn, 
-    	fun() -> 
-    		nkdocker_app:start(),
-    		Opts = #{						% Read from environment vars or uncomment
-    			% host = "127.0.0.1",
-    			% port = 0,
-    			% proto = tls,
-    			% keyfile = ""
-    			% certfile =""
-    		},
-    		{ok, C} = nkdocker:start_link(Opts),
-    		?debugMsg("Starting BASIC test"),
-    		C
-		end,
-		fun(C) -> 
-			nkdocker:stop(C)
-		end,
-	    fun(C) ->
-		    [
-				fun() -> conns(C) end,
-                fun() -> images(C) end,
-                fun() -> run(C) end
-			]
-		end
-  	}.
+% basic_test_() ->
+%   	{setup, spawn, 
+%     	fun() -> 
+%     		nkdocker_app:start(),
+%     		Opts = #{						% Read from environment vars or uncomment
+%     			% host = "127.0.0.1",
+%     			% port = 0,
+%     			% proto = tls,
+%     			% keyfile = ""
+%     			% certfile =""
+%     		},
+%     		{ok, C} = nkdocker:start_link(Opts),
+%     		?debugMsg("Starting BASIC test"),
+%     		C
+% 		end,
+% 		fun(C) -> 
+% 			nkdocker:stop(C)
+% 		end,
+% 	    fun(C) ->
+% 		    [
+% 				fun() -> conns(C) end,
+%                 fun() -> images(C) end,
+%                 fun() -> run(C) end
+% 			]
+% 		end
+%   	}.
 
 
 conns(C) ->
@@ -85,6 +85,9 @@ images(C) ->
     [#{<<"stream">>:=<<"Successfully built ", Id1:12/binary, "\n">>}|_] = 
         lists:reverse(List1),
     {ok, #{<<"Id">>:=FullId1}=Img1} = nkdocker:inspect_image(C, Id1),
+    lager:warning("Id: ~p, FullId1: ~p", [Id1, FullId1]),
+
+
     {ok, Img1} = nkdocker:inspect_image(C, "nkdocker:test1"),
     <<Id1:12/binary, _/binary>> = FullId1,
     {ok, [#{<<"Id">>:=FullId1}|_]} = nkdocker:history(C, Id1),
@@ -104,6 +107,9 @@ images(C) ->
 
 run(C) ->
     ?debugMsg("Starting run test"),
+    nkdocker:kill(C, "nkdocker1"),
+    nkdocker:rm(C, "nkdocker1"),
+
     {ok, Ref, _} = nkdocker:events(C),
     {ok, #{<<"Id">>:=Id1}} = nkdocker:create(C, "busybox:latest", 
         #{
@@ -147,7 +153,8 @@ run(C) ->
     <<ShortId1:12/binary, _/binary>> = Id1,
     <<"cat /etc/hostname\r\n", ShortId1:12/binary, _/binary>> = Msg1,
 
-    {ok, <<"/ # / # cat /etc/hostname\r\n", ShortId1:12/binary, _/binary>>} = 
+    lager:warning("S: ~p", [ShortId1]),
+    {ok, <<"/ # \n/ # cat /etc/hostname\n", ShortId1:12/binary, _/binary>>} = 
         nkdocker:logs(C, ShortId1, #{stdout=>true}),
 
     ok = nkdocker:rename(C, ShortId1, "nkdocker2"),
