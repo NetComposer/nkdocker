@@ -23,7 +23,7 @@
 -author('Carlos Gonzalez <carlosj.gf@gmail.com>').
 -behaviour(gen_server).
 
--export([start_link/1, start/1, stop/1, cmd/5, data/3, finish/2]).
+-export([start_link/1, start/1, stop/1, cmd/5, data/3, finish/2, create_spec/2]).
 -export([init/1, terminate/2, code_change/3, handle_call/3, handle_cast/2, 
          handle_info/2]).
 -export([refresh_fun/1]).
@@ -100,8 +100,17 @@ finish(Pid, Ref) ->
     gen_server:call(Pid, {finish, {self(), Ref}}, ?CALL_TIMEOUT).
 
 
+%% @doc Generates creation options
+-spec create_spec(pid(), nkdocker:create_opts()) ->
+    {ok, map()} | {error, term()}.
+
+create_spec(Pid, Opts) ->
+    {ok, Vsn} = gen_server:call(Pid, get_vsn, ?CALL_TIMEOUT),
+    nkdocker_opts:create_spec(Vsn, Opts).
+
 %% @private
 refresh_fun(NkPort) ->
+    % lager:debug("Refreshing connection"),
     case nkpacket_connection:send(NkPort, <<"\r\n">>) of
         ok -> true;
         _ -> false
@@ -129,6 +138,7 @@ refresh_fun(NkPort) ->
 -record(state, {
     conn :: nkpacket:raw_connection(),
     conn_opts :: map(),
+    vsn :: binary(),
     cmds = [] :: [#cmd{}]
 }).
 
@@ -153,6 +163,7 @@ init([Opts]) ->
                 user => {notify, self()}, 
                 idle_timeout => ?CONN_TIMEOUT
             },
+            lager:debug("Connecting to ~p, (~p)", [Conn, ConnOpts]),
             case nkpacket:connect({nkdocker, self()}, Conn, ConnOpts) of
                 {ok, _} ->
                     State = #state{
@@ -162,7 +173,7 @@ init([Opts]) ->
                     },
                     case get_version(State) of
                         {ok, Vsn} when Vsn >= <<"1.17">> ->
-                            {ok, State};
+                            {ok, State#state{vsn=Vsn}};
                         {ok, Vsn} ->
                             {stop, {invalid_docker_version, Vsn}};
                         {error, Error} ->
@@ -228,6 +239,9 @@ handle_call({finish, From}, _, #state{cmds=Cmds}=State) ->
         _ ->
             {reply, {error, unknown_ref}, State}
     end;
+
+handle_call(get_vsn, _From, #state{vsn=Vsn}=State) ->
+    {reply, {ok, Vsn}, State};
 
 handle_call(get_state, _From, State) ->
     {reply, State, State};
@@ -388,13 +402,14 @@ send(Method, Path, Body, Opts, From, State) ->
     Msg = {http, From, Method, Path, Hds2, Body},
     ConnOpts2 = case Opts of
         #{timeout:=Timeout} -> ConnOpts1#{idle_timeout=>Timeout};
+        #{idle_timeout:=Timeout} -> ConnOpts1#{idle_timeout=>Timeout};
         _ -> ConnOpts1
     end,
     ConnOpts3 = case Opts of
         #{refresh:=true} -> ConnOpts2#{refresh_fun=>fun refresh_fun/1};
         _ -> ConnOpts2
     end,
-    % lager:warning("SEND: ~p", [Msg]),
+    lager:warning("NkDOCKER SEND: ~p ~p", [Msg, ConnOpts3]),
     case nkpacket:send({nkdocker, Id}, Conn, Msg, ConnOpts3) of
         {ok, NkPort} ->
             ConnPid = nkpacket:get_pid(NkPort),

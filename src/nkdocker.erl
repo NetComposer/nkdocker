@@ -40,7 +40,6 @@
 	     exec_resize/4]).
 -import(nklib_util, [to_binary/1]).
 
-
 -define(HUB, <<"https://index.docker.io/v1/">>).
 -define(TIMEOUT, 180000).
 
@@ -59,7 +58,7 @@
 		proto => tcp | tls,				% Default tcp
 		certfile => text(),
 		keyfile => text(),
-		idle_timeout => integer()		% Msecs, default 5000
+		idle_timeout => integer()		% Msecs before closing, default 5000
 	}.
 
 -type docker_device() ::
@@ -83,11 +82,13 @@
 		cap_drop => [text()], 
 		cidfile => text(),
 		cmds => [text()], 
-		cpu_set => text(),
+		cpu_set => text(),					% Deprecated
+		cpu_set_cpus => text(),
 		cpu_shares => pos_integer(),
 		devices => [docker_device()],	
 		dns => [text()],
 		dns_search => [text()],
+		domain_name => text(),
 		env => [{text(), text()}],
 		entrypoints => [text()],
 		expose => [docker_port()],
@@ -300,7 +301,7 @@ ps(Pid, Opts) ->
 
 create(Pid, Image, Opts) ->
 	Path = make_path(<<"/containers/create">>, Opts, [name]),
-	case nkdocker_opts:create_spec(Opts#{image=>Image}) of
+	case nkdocker_server:create_spec(Pid, Opts#{image=>Image}) of
 		{ok, Spec} ->
 			post(Pid, Path, Spec, #{force_new=>true});
 		{error, Error} ->
@@ -857,7 +858,7 @@ commit(Pid, Container) ->
 commit(Pid, Container, Opts) ->
 	UrlOpts = [container, repo, tag, author, comment],
 	Path = make_path(<<"/commit">>, Opts#{container=>Container}, UrlOpts), 
-	case nkdocker_opts:create_spec(Opts) of
+	case nkdocker_server:create_spec(Pid, Opts) of
 		{ok, Spec} ->
 			Timeout = maps:get(timeout, Opts, ?TIMEOUT),
 			post(Pid, Path, Spec, #{force_new=>true, timeout=>Timeout});

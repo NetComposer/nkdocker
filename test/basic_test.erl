@@ -23,7 +23,7 @@
 
 -compile([export_all]).
 -include_lib("eunit/include/eunit.hrl").
--include_lib("nkpacket/include/nkpacket.hrl").
+% -include_lib("nkpacket/include/nkpacket.hrl").
 -include("nkdocker.hrl").
 
 -define(RECV(M), receive M -> ok after 1000 -> error(?LINE) end).
@@ -65,7 +65,8 @@ conns(C) ->
     ConnRef = erlang:monitor(process, ConnPid),
     % We have only the events exclusive connection
     [] = [N || N <- nkpacket:get_all({nkdocker, C})],
-    [#nkport{pid=ConnPid}] = [N || N <- nkpacket:get_all({nkdocker, exclusive})],
+    Conns = [N || N <- nkpacket:get_all({nkdocker, exclusive})],
+    [] = [N || N <-Conns, nkpacket:get_pid(N)/=ConnPid],
 
     {ok, #{<<"ApiVersion">>:=_}} = nkdocker:version(C),
     {ok, #{<<"Containers">>:=_}} = nkdocker:info(C),
@@ -78,23 +79,18 @@ conns(C) ->
 
 
 images(C) ->
-    ?debugMsg("Building image from image1.tar"),
+    ?debugMsg("Building image from image1.tar (imports busybox:latest)"),
     Dir = filename:join(filename:dirname(code:priv_dir(nkdocker)), "test"),
     {ok, ImageTar1} = file:read_file(filename:join(Dir, "image1.tar")),
     {ok, List1} = nkdocker:build(C, ImageTar1, #{t=>"nkdocker:test1", force_rm=>true}),
     [#{<<"stream">>:=<<"Successfully built ", Id1:12/binary, "\n">>}|_] = 
         lists:reverse(List1),
     {ok, #{<<"Id">>:=FullId1}=Img1} = nkdocker:inspect_image(C, Id1),
-    lager:warning("Id: ~p, FullId1: ~p", [Id1, FullId1]),
-
+    % lager:warning("Id: ~p, FullId1: ~p", [Id1, FullId1]),
 
     {ok, Img1} = nkdocker:inspect_image(C, "nkdocker:test1"),
     <<Id1:12/binary, _/binary>> = FullId1,
     {ok, [#{<<"Id">>:=FullId1}|_]} = nkdocker:history(C, Id1),
-
-    ?debugMsg("Building image from busybox"),
-    {ok, _} = nkdocker:create_image(C, #{fromImage=>"busybox:latest"}),
-    {ok, #{<<"Id">>:=FullId1}} = nkdocker:inspect_image(C, "busybox:latest"),
     case nkdocker:tag(C, Id1, #{repo=>"nkdocker", tag=>"test2"}) of
         ok -> ok;
         {error, {conflict, _}} -> ok
@@ -102,6 +98,10 @@ images(C) ->
     {ok, #{<<"Id">>:=FullId1}} = nkdocker:inspect_image(C, "nkdocker:test2"),
     {ok, _} = nkdocker:rmi(C, <<"nkdocker:test1">>),
     {error, {not_found, _}} = nkdocker:inspect_image(C, "nkdocker:test1"),
+
+    ?debugMsg("Building image from busybox:latest"),
+    {ok, _} = nkdocker:create_image(C, #{fromImage=>"busybox:latest"}),
+    {ok, #{<<"Id">>:=FullId1}} = nkdocker:inspect_image(C, "busybox:latest"),
     ok.
 
 
@@ -111,6 +111,8 @@ run(C) ->
     nkdocker:rm(C, "nkdocker1"),
 
     {ok, Ref, _} = nkdocker:events(C),
+
+    ?debugMsg("Start container from busybox:latest"),
     {ok, #{<<"Id">>:=Id1}} = nkdocker:create(C, "busybox:latest", 
         #{
             name => "nkdocker1",
@@ -118,6 +120,7 @@ run(C) ->
             tty => true,
             cmd => ["/bin/sh"]
         }),
+    ?debugMsg("... created"),
     receive_status(Ref, Id1, <<"create">>),
 
     {ok, #{<<"Id">>:=Id1}=Data1} = nkdocker:inspect(C, Id1),
@@ -153,7 +156,6 @@ run(C) ->
     <<ShortId1:12/binary, _/binary>> = Id1,
     <<"cat /etc/hostname\r\n", ShortId1:12/binary, _/binary>> = Msg1,
 
-    lager:warning("S: ~p", [ShortId1]),
     {ok, <<"/ # \n/ # cat /etc/hostname\n", ShortId1:12/binary, _/binary>>} = 
         nkdocker:logs(C, ShortId1, #{stdout=>true}),
 
