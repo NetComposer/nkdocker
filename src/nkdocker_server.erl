@@ -409,7 +409,7 @@ send(Method, Path, Body, Opts, From, State) ->
         #{refresh:=true} -> ConnOpts2#{refresh_fun=>fun refresh_fun/1};
         _ -> ConnOpts2
     end,
-    lager:warning("NkDOCKER SEND: ~p ~p", [Msg, ConnOpts3]),
+    lager:debug("NkDOCKER SEND: ~p ~p", [Msg, ConnOpts3]),
     case nkpacket:send({nkdocker, Id}, Conn, Msg, ConnOpts3) of
         {ok, NkPort} ->
             ConnPid = nkpacket:get_pid(NkPort),
