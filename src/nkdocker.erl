@@ -80,10 +80,11 @@
 		add_hosts => [{Host::text(), Ip::inet:ip_address()}],
 		cap_add => [text()], 
 		cap_drop => [text()], 
+		cgroup_parent => text(),			% New in 1.18
 		cidfile => text(),
 		cmds => [text()], 
 		cpu_set => text(),					% Deprecated
-		cpu_set_cpus => text(),
+		cpu_set_cpus => text(),				% New in 1.18
 		cpu_shares => pos_integer(),
 		devices => [docker_device()],	
 		dns => [text()],
@@ -97,21 +98,25 @@
 		labels => [{Key::text(), Val::text()}],
 		links => [{Cont::text(), Alias::text()}],	
 		lxc_confs => [{text(), text()}],
+		log_config => Text::text() | {Type::text(), Config::map()},		% New in 1.18
 		mac_address => text(),
 		memory => pos_integer(),
 		memory_swap => -1 | pos_integer(),
 		net => none | bridge | host | text(),
 		publish_all => boolean(),
 		publish => [docker_publish()],
-		pid => text(),
+		% pid_mode => text(),
 		privileged => boolean(),
 		read_only => boolean(),
 		restart => always | on_failure | {on_failure, integer()},
 		security_opts => [text()],
 		tty => boolean(),
+		ulimits => [{Name::text(), Soft::integer(), Hard::integer()}],	% New in 1.18
 		user => text(),
-		volumes => [Cont::text() | {Host::text(), Cont::text()}],
-		volumes_from => [text()],
+		volumes => [
+			Cont::text() | {Host::text(), Cont::text()} | {Host::text(), Cont::text(), ro}
+		],
+		volumes_from => [text() | {text(), ro|rw}],
 		workdir => text()
 	}.
 	
@@ -714,6 +719,10 @@ build(Pid, TarBin) ->
 		pull => boolean(), 		% attempt to pull the image even if exists locally
 		rm => boolean(),		% remove intermediate containers (default)
 		forcerm => boolean(),	% always remove intermediate containers (includes rm)
+		memory => integer(),	% set memory limit for build
+		memswap => integer(),   % Total memory (memory + swap), -1 to disable swap
+		cpushares => integer(),	% CPU shares (relative weight)
+		cpusetcpus => integer(),% CPUs in which to allow exection, e.g., 0-3, 0,1
 		timeout => integer(),	% time to wait for sync requests
 		username => text(),		% 
 		password => text(),		% Use this info to log to a remote
@@ -723,7 +732,8 @@ build(Pid, TarBin) ->
 	{ok, [map()]} | {ok, reference(), pid()} | {error, error()}.
 
 build(Pid, TarBin, Opts) ->
-	UrlOpts = [dockerfile, t, remote, q, nocache, pull, rm, forcerm],
+	UrlOpts = [dockerfile, t, remote, q, nocache, pull, rm, forcerm, memory, memswap,
+	           cpushares, cpusetcpus],
 	Path = make_path(<<"/build">>, Opts, UrlOpts),
 	PostOpts1 = #{
 		async => maps:get(async, Opts, false),

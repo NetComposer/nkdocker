@@ -80,12 +80,12 @@ conn_bridge(Data, Type, State) ->
 print(Data) ->
     case binary:split(Data, <<"\r\n\r\n">>) of
         [Headers, <<${, _/binary>>=Json] ->
-            case catch jiffy:decode(Json, [return_maps]) of
+            case catch jiffy:decode(Json, []) of
                 {'EXIT', _} ->
                     lager:notice("~s", [Data]);
-                Map ->
-                    % lager:notice("~s\r\n\r\n~p", [Headers, Map])
-                    lager:notice("~s\r\n\r\n~s", [Headers, jiffy:encode(Map, [pretty])])
+                {Map} ->
+                    lager:notice("~s\r\n\r\n~s", [Headers, jiffy:encode({lists:sort(Map)}, [pretty])])
+                    % lager:notice("~s\r\n\r\n~s", [Headers, jiffy:encode(Map, [pretty])])
             end;
         _ ->
             lager:notice("~s", [Data])

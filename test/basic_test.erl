@@ -28,32 +28,32 @@
 
 -define(RECV(M), receive M -> ok after 1000 -> error(?LINE) end).
 
-% basic_test_() ->
-%   	{setup, spawn, 
-%     	fun() -> 
-%     		nkdocker_app:start(),
-%     		Opts = #{						% Read from environment vars or uncomment
-%     			% host = "127.0.0.1",
-%     			% port = 0,
-%     			% proto = tls,
-%     			% keyfile = ""
-%     			% certfile =""
-%     		},
-%     		{ok, C} = nkdocker:start_link(Opts),
-%     		?debugMsg("Starting BASIC test"),
-%     		C
-% 		end,
-% 		fun(C) -> 
-% 			nkdocker:stop(C)
-% 		end,
-% 	    fun(C) ->
-% 		    [
-% 				fun() -> conns(C) end,
-%                 fun() -> images(C) end,
-%                 fun() -> run(C) end
-% 			]
-% 		end
-%   	}.
+basic_test_() ->
+  	{setup, spawn, 
+    	fun() -> 
+    		nkdocker_app:start(),
+    		Opts = #{						% Read from environment vars or uncomment
+    			% host = "127.0.0.1",
+    			% port = 0,
+    			% proto = tls,
+    			% keyfile = ""
+    			% certfile =""
+    		},
+    		{ok, C} = nkdocker:start_link(Opts),
+    		?debugMsg("Starting BASIC test"),
+    		C
+		end,
+		fun(C) -> 
+			nkdocker:stop(C)
+		end,
+	    fun(C) ->
+		    [
+				fun() -> conns(C) end,
+                {timeout, 60, fun() -> images(C) end},
+                {timeout, 60, fun() -> run(C) end}
+			]
+		end
+  	}.
 
 
 conns(C) ->
