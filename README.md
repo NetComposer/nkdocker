@@ -1,15 +1,15 @@
 # NkDOCKER: Erlang Docker Client
 
-NkDOCKER is a native, 100% Erlang [Docker](https://www.docker.com) client, using the [Docker Remote API](https://docs.docker.com/reference/api/docker_remote_api_v1.17/) v1.17.
+NkDOCKER is a native, 100% Erlang [Docker](https://www.docker.com) client, using the [Docker Remote API](https://docs.docker.com/reference/api/docker_remote_api_v1.18/) v1.18.
 
-* **Full v1.17 (Docker 1.5) API supported**. Every single command and option in the standard Docker client is available.
+* **Full v1.18 (Docker 1.6) API supported**. Every single command and option in the standard Docker client is available.
 * It supports bidirectional attach.
 * It can control any number of local or remote Docker daemons.
 * Events, stdin/stdout/stderr attachs, logs, etc., are sent as Erlang messages.
 * It can reuse existing connections to speed up the message sending.
 * It supports TCP and TLS transports. Unix socket transport is not supported yet.
 
-NkDOCKER needs Erlang >= 17, and it is tested on Linux and OSX (using boot2docker). The minimum required Docker server version is _1.6_. It is part of the Nekso software suite, but can be used stand-alone.
+NkDOCKER needs Erlang >= 17, and it is tested on Linux and OSX (using boot2docker). The minimum required Docker server version is _1.5_ (Remote API v1.17). It is part of the Nekso software suite, but can be used stand-alone.
 
 ## Starting a connection
 
