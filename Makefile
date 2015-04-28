@@ -26,7 +26,7 @@ eunit:
 	./rebar eunit skip_deps=true
 
 shell:
-	erl -config util/shell_app.config -args_file util/shell_vm.args -s nkdocker_app -s reloader
+	erl -config util/shell_app.config -args_file util/shell_vm.args -s nkdocker_app
 
 
 docs:
