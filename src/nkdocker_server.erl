@@ -357,7 +357,7 @@ get_version(#state{conn=Conn, conn_opts=ConnOpts}) ->
                     {nkdocker, {head, From, 200, _, false}} ->
                         receive
                             {nkdocker, {data, From, Data, true}} ->
-                                catch jiffy:decode(Data, [return_maps])
+                                catch jsx:decode(Data, [return_maps])
                         after
                             5000 -> timeout
                         end
@@ -569,7 +569,7 @@ parse_body(#cmd{headers=Headers, mode=Mode, body=Body, chunked=Chunked}) ->
                 _ -> 
                     Body
             end,
-            case catch jiffy:decode(Body1, [return_maps]) of
+            case catch jsx:decode(Body1, [return_maps]) of
                 {'EXIT', _} ->
                     {error, {invalid_json, Body}};
                 Obj ->
@@ -628,5 +628,3 @@ do_stop(Cmd, Msg, #state{cmds=Cmds}=State) ->
     end,
     Cmds1 = lists:keydelete(From, #cmd.from, Cmds),
     State#state{cmds=Cmds1}.
-
-
