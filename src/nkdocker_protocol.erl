@@ -24,7 +24,7 @@
 -behaviour(nkpacket_protocol).
 
 -export([transports/1]).
--export([conn_init/1, conn_parse/2, conn_unparse/2]).
+-export([conn_init/1, conn_parse/2, conn_encode/2]).
 
 -include_lib("nklib/include/nklib.hrl").
 
@@ -84,14 +84,14 @@ conn_parse(Data, #state{notify=Notify}=State) ->
 
 
 %% @private
--spec conn_unparse(term(), #state{}) ->
+-spec conn_encode(term(), #state{}) ->
 	{ok, nkpacket:raw_msg(), #state{}} | {error, term(), #state{}} |
 	{stop, Reason::term()}.
 
-conn_unparse({http, Ref, Method, Path, Headers, Body}, State) ->
+conn_encode({http, Ref, Method, Path, Headers, Body}, State) ->
 	request(Ref, Method, Path, Headers, Body, State);
 	
-conn_unparse({data, Ref, Data}, State) ->
+conn_encode({data, Ref, Data}, State) ->
 	data(Ref, Data, State).
 	
 
