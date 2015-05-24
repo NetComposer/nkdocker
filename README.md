@@ -33,6 +33,7 @@ You can now start sending commands to the Docker daemon. Some commands (usually 
 
 
 You can also indicate the connection parameters using standard OS environment variables. The follow keys are recognized:
+
 Key|Value
 ---|---
 DOCKER_HOST|Host to connect to, i.e "tcp://127.0.0.1:2375"
