@@ -53,7 +53,7 @@ iter_path([], Acc) ->
     Acc;
 
 iter_path([{Key, Val}|Rest], Acc) when is_map(Val) ->
-    iter_path([{Key, jiffy:encode(Val)}|Rest], Acc);
+    iter_path([{Key, jsx:encode(Val)}|Rest], Acc);
 
 iter_path([{Key, Val}|Rest], Acc) ->
     iter_path(Rest, list_to_binary([Acc, $&, to_binary(Key), $=, to_urlencode(Val)])).
@@ -636,5 +636,3 @@ parse_text() ->
             'VolumesFrom' := [<<"from2:ro">>, <<"from1">>]
         }
     } = Op.
-    
-    
