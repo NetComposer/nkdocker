@@ -35,14 +35,14 @@
     #{
         async => boolean(),
         force_new => boolean(),
-        headers => [{binary(), binary}],
+        headers => [{binary(), binary()}],
         redirect => string(),           % Send to file
         timeout => pos_integer(),       % Reply and closes connection if reached
         refresh => boolean()            % Automatic refresh
     }.
 
--define(CALL_TIMEOUT, 60000).
--define(CONN_TIMEOUT, 180000).
+% -define(CALL_TIMEOUT, 60000).
+-define(CMD_TIMEOUT, 180000).
 
 
 %% ===================================================================
@@ -81,7 +81,10 @@ stop(Pid) ->
 
 cmd(Pid, Verb, Path, Body, Opts) ->
     % Path1 = <<"/v1.17", Path/binary>>,
-    gen_server:call(Pid, {cmd, Verb, Path, Body, Opts}, ?CALL_TIMEOUT).
+    case catch gen_server:call(Pid, {cmd, Verb, Path, Body, Opts}, infinity) of
+        {'EXIT', _} -> {error, process_failed};
+        Other -> Other
+    end.
 
 
 %% @doc Sends a in-message data
@@ -89,15 +92,21 @@ cmd(Pid, Verb, Path, Body, Opts) ->
     ok | {error, term()}.
 
 data(Pid, Ref, Data) ->
-    gen_server:call(Pid, {data, {self(), Ref}, Data}, ?CALL_TIMEOUT).
+    case catch gen_server:call(Pid, {data, {self(), Ref}, Data}, infinity) of
+        {'EXIT', _} -> {error, process_failed};
+        Other -> Other
+    end.
 
 
 %% @doc Finished an asynchronous command
 -spec finish(pid(), reference()) ->
-    {ok, pid()} | {error, term()}.
+    ok | {error, term()}.
 
 finish(Pid, Ref) ->
-    gen_server:call(Pid, {finish, {self(), Ref}}, ?CALL_TIMEOUT).
+    case catch gen_server:call(Pid, {finish, {self(), Ref}}, infinity) of
+        {'EXIT', _} -> {error, process_failed};
+        Other -> Other
+    end.
 
 
 %% @doc Generates creation options
@@ -105,8 +114,11 @@ finish(Pid, Ref) ->
     {ok, map()} | {error, term()}.
 
 create_spec(Pid, Opts) ->
-    {ok, Vsn} = gen_server:call(Pid, get_vsn, ?CALL_TIMEOUT),
-    nkdocker_opts:create_spec(Vsn, Opts).
+    case catch gen_server:call(Pid, get_vsn, infinity) of
+        {ok, Vsn} -> nkdocker_opts:create_spec(Vsn, Opts);
+        {'EXIT', _} -> {error, process_failed}
+    end.
+
 
 %% @private
 refresh_fun(NkPort) ->
@@ -157,11 +169,11 @@ init([Opts]) ->
     case nkpacket_dns:get_ips(nkdocker, Host) of
         [Ip] ->
             Conn = {nkdocker_protocol, Proto, Ip, Port},
-            Opts2 = maps:with([certfile, keyfile, idle_timeout], Opts1),
+            Opts2 = maps:with([certfile, keyfile], Opts1),
             ConnOpts = Opts2#{
                 monitor => self(), 
                 user => {notify, self()}, 
-                idle_timeout => ?CONN_TIMEOUT
+                idle_timeout => ?CMD_TIMEOUT
             },
             lager:debug("Connecting to ~p, (~p)", [Conn, ConnOpts]),
             case nkpacket:connect({nkdocker, self()}, Conn, ConnOpts) of
@@ -277,17 +289,6 @@ handle_info({nkdocker, {data, From, Data, Last}}, State) ->
     State1 = parse_data(From, Data, Last, State),
     {noreply, State1};
 
-% handle_info({timeout, _, {async, From, Refresh}}, #state{cmds=Cmds}=State) ->
-%     case lists:keyfind(From, #cmd.from, Cmds) of
-%         #cmd{conn_pid=ConnPid}=Cmd ->
-%             spawn(fun() -> nkpacket_connection:send(ConnPid, <<"\r\n">>) end),
-%             Cmd1 = Cmd#cmd{refresh=start_timer(From, Refresh)},
-%             Cmds1 = lists:keystore(From, #cmd.from, Cmds, Cmd1),
-%             {noreply, State#state{cmds=Cmds1}};
-%         false ->
-%             {noreply, State}
-%     end;
-
 handle_info({'DOWN', MRef, process, _MPid, _Reason}, #state{cmds=Cmds}=State) ->
     case lists:keyfind(MRef, #cmd.conn_ref, Cmds) of
         #cmd{mode=async}=Cmd ->
@@ -391,9 +392,20 @@ send(Method, Path, Body, Opts, From, State) ->
         #{redirect:=Port} -> {redirect, Port};
         _ -> shared
     end,
+    Timeout = maps:get(timeout, Opts, ?CMD_TIMEOUT),
     {Id, ConnOpts1, Hds1} = case Mode of
-        shared -> {self(), ConnOpts, [{<<"connection">>, <<"keep-alive">>}]};
-        _ -> {exclusive, ConnOpts#{force_new=>true}, []}
+        shared -> 
+            {
+                self(), 
+                ConnOpts#{idle_timeout=>Timeout},
+                [{<<"connection">>, <<"keep-alive">>}]
+            };
+        _ -> 
+            {
+                exclusive, 
+                ConnOpts#{idle_timoeut=>Timeout, force_new=>true}, 
+                []
+            }
     end,
     Hds2 = case Opts of
         #{headers:=UserHeaders} -> Hds1 ++ UserHeaders;
@@ -401,16 +413,13 @@ send(Method, Path, Body, Opts, From, State) ->
     end,
     Msg = {http, From, Method, Path, Hds2, Body},
     ConnOpts2 = case Opts of
-        #{timeout:=Timeout} -> ConnOpts1#{idle_timeout=>Timeout};
-        #{idle_timeout:=Timeout} -> ConnOpts1#{idle_timeout=>Timeout};
-        _ -> ConnOpts1
+        #{refresh:=true} -> 
+            ConnOpts1#{refresh_fun=>fun refresh_fun/1};
+        _ -> 
+            ConnOpts1
     end,
-    ConnOpts3 = case Opts of
-        #{refresh:=true} -> ConnOpts2#{refresh_fun=>fun refresh_fun/1};
-        _ -> ConnOpts2
-    end,
-    lager:debug("NkDOCKER SEND: ~p ~p", [Msg, ConnOpts3]),
-    case nkpacket:send({nkdocker, Id}, Conn, Msg, ConnOpts3) of
+    lager:debug("NkDOCKER SEND: ~p ~p", [Msg, ConnOpts2]),
+    case nkpacket:send({nkdocker, Id}, Conn, Msg, ConnOpts2) of
         {ok, NkPort} ->
             ConnPid = nkpacket:get_pid(NkPort),
             Cmd1 = #cmd{
@@ -426,7 +435,6 @@ send(Method, Path, Body, Opts, From, State) ->
                 _ ->
                     Cmd1
             end,
-
             {ok, State#state{cmds=[Cmd2|Cmds]}};
         {error, Error} ->
             {error, Error}

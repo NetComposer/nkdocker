@@ -54,11 +54,10 @@
 -type conn_opts() ::
 	#{	
 		host => text(),					% Default "127.0.0.1"
-		port => inet:port_number(),		% Default 2376
+		port => inet:port_number(),		% Default 2375
 		proto => tcp | tls,				% Default tcp
 		certfile => text(),
-		keyfile => text(),
-		idle_timeout => integer()		% Msecs before closing, default 5000
+		keyfile => text()
 	}.
 
 -type docker_device() ::
