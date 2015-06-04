@@ -33,6 +33,7 @@ You can now start sending commands to the Docker daemon. Some commands (usually 
 
 
 You can also indicate the connection parameters using standard OS environment variables. The follow keys are recognized:
+
 Key|Value
 ---|---
 DOCKER_HOST|Host to connect to, i.e "tcp://127.0.0.1:2375"
@@ -62,12 +63,12 @@ After connection to the daemon, you can start sending commands, for example (the
 Let's create a new container:
 
 ```erlang
-nkdocker:create(C, "busybox:latest", 
+nkdocker:create(P, "busybox:latest",
     #{
         name => "nkdocker1",
         interactive => true,
         tty => true,
-        cmd => ["/bin/sh"]
+        cmds => ["/bin/sh"]
     }).
 {ok, #{<<"Id">> => ...}}
 ```
@@ -84,7 +85,7 @@ NkPACKET allows several async commands, for example to get Docker events:
 Now every selected event (all for this example) will be sent to the process:
 
 ```erlang
-> nkdocker:start(C, "nkdocker1").
+> nkdocker:start(P, "nkdocker1").
 ok
 
 > flush().
@@ -96,30 +97,3 @@ Shell got {nkdocker,#Ref<0.0.3.103165>,
 ```
 
 See [nkdocker.erl](nkdocker.erl) to find all available commands.
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
