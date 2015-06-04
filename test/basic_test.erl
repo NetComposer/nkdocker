@@ -23,7 +23,7 @@
 
 -compile([export_all]).
 -include_lib("eunit/include/eunit.hrl").
-% -include_lib("nkpacket/include/nkpacket.hrl").
+-include_lib("nkpacket/include/nkpacket.hrl").
 -include("nkdocker.hrl").
 
 -define(RECV(M), receive M -> ok after 1000 -> error(?LINE) end).
@@ -60,22 +60,24 @@ conns(C) ->
     %% Stop all connections, if active
     [nkpacket_connection:stop(N, normal) || N <- nkpacket:get_all({nkdocker, C})],
     [nkpacket_connection:stop(N, normal) || N <- nkpacket:get_all({nkdocker, exclusive})],
+    timer:sleep(100),
 
-	{ok, Ref, ConnPid} = nkdocker:events(C),
-    ConnRef = erlang:monitor(process, ConnPid),
+	{async, Ref} = nkdocker:events(C),
+    timer:sleep(50),
     % We have only the events exclusive connection
     [] = [N || N <- nkpacket:get_all({nkdocker, C})],
-    Conns = [N || N <- nkpacket:get_all({nkdocker, exclusive})],
-    [] = [N || N <-Conns, nkpacket:get_pid(N)/=ConnPid],
+    [#nkport{pid=ConnPid}] = nkpacket:get_all({nkdocker, exclusive}),
+    ConnRef = erlang:monitor(process, ConnPid),
+    % Conns = [N || N <- nkpacket:get_all({nkdocker, exclusive})],
+    % [] = [N || N <-Conns, nkpacket:get_pid(N)/=ConnPid],
 
     {ok, #{<<"ApiVersion">>:=_}} = nkdocker:version(C),
     {ok, #{<<"Containers">>:=_}} = nkdocker:info(C),
     ok = nkdocker:ping(C),
     1 = length([N || N <- nkpacket:get_all({nkdocker, C})]),
     ok = nkdocker:finish_async(C, Ref),
-    ?RECV({nkdocker, Ref, {stop, normal}}),
+    ?RECV({nkdocker, Ref, {ok, user_stop}}),
     ?RECV({'DOWN', ConnRef, process, ConnPid, normal}).
-
 
 
 images(C) ->
@@ -110,7 +112,7 @@ run(C) ->
     nkdocker:kill(C, "nkdocker1"),
     nkdocker:rm(C, "nkdocker1"),
 
-    {ok, Ref, _} = nkdocker:events(C),
+    {async, Ref} = nkdocker:events(C),
 
     ?debugMsg("Start container from busybox:latest"),
     {ok, #{<<"Id">>:=Id1}} = nkdocker:create(C, "busybox:latest", 
@@ -145,23 +147,28 @@ run(C) ->
     ok = nkdocker:kill(C, "nkdocker1"),
     receive_status(Ref, Id1, <<"die">>),
     receive_status(Ref, Id1, <<"kill">>),
-    ?RECV({wait, Ref, 137}),
+    ?RECV({wait, Ref, #{<<"StatusCode">> := 137}}),
 
     ok = nkdocker:start(C, Id1),
     receive_status(Ref, Id1, <<"start">>),
 
-    {ok, Ref2, _} = nkdocker:attach(C, Id1),
+    {async, Ref2} = nkdocker:attach(C, Id1),
     ok = nkdocker:attach_send(C, Ref2, "cat /etc/hostname\r\n"),
     Msg1 = receive_msg(Ref2, <<>>),
     <<ShortId1:12/binary, _/binary>> = Id1,
     <<"cat /etc/hostname\r\n", ShortId1:12/binary, _/binary>> = Msg1,
 
-    {ok, <<"/ # \n/ # cat /etc/hostname\n", ShortId1:12/binary, _/binary>>} = 
+    {ok, [
+        <<"/ # \n">>, 
+        <<"/ # cat /etc/hostname\n">>, 
+        <<ShortId1:12/binary, "\n">>,
+        <<"/ # \n">>
+    ]} = 
         nkdocker:logs(C, ShortId1, #{stdout=>true}),
 
     ok = nkdocker:rename(C, ShortId1, "nkdocker2"),
     ok = nkdocker:restart(C, "nkdocker2"),
-    ?RECV({nkdocker, Ref2, {stop, connection_stopped}}),
+    ?RECV({nkdocker, Ref2, {error, connection_failed}}),
 
     receive_status(Ref, Id1, <<"die">>),
     receive_status(Ref, Id1, <<"start">>),
@@ -174,7 +181,7 @@ run(C) ->
     receive_status(Ref, Id1, <<"destroy">>),
 
     nkdocker:finish_async(C, Ref),
-    ?RECV({nkdocker, Ref, {stop, normal}}),
+    ?RECV({nkdocker, Ref, {ok, user_stop}}),
     ok.
 
 
@@ -182,11 +189,11 @@ run(C) ->
 %% Internal
 
 receive_status(Ref, Id, Status) ->
-    ?RECV({nkdocker, Ref, #{<<"id">>:=Id, <<"status">>:=Status}}).
+    ?RECV({nkdocker, Ref, {data, #{<<"id">>:=Id, <<"status">>:=Status}}}).
 
 receive_msg(Ref, Buf) ->
     receive 
-        {nkdocker, Ref, Data} ->
+        {nkdocker, Ref, {data, Data}} ->
             receive_msg(Ref, <<Buf/binary, Data/binary>>)
     after 
         500 -> Buf

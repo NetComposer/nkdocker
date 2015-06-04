@@ -31,10 +31,9 @@
 -record(state, {
 	nkport :: nkpacket:nkport(),
 	notify :: pid(),
-	buffer = <<>> :: binary(),
+	buff = <<>> :: binary(),
 	streams = [] :: [reference()], 
-	in = head :: head | {body, non_neg_integer()} | chunked | stream,
-	in_state :: {non_neg_integer(), non_neg_integer()}
+	next = head :: head | {body, non_neg_integer()} | chunked | stream
 }).
 
 
@@ -53,7 +52,7 @@ transports(_) -> [tls].
 
 %% @private
 -spec conn_init(nkpacket:nkport()) ->
-	#state{}.
+	{ok, #state{}}.
 
 conn_init(NkPort) ->
 	{ok, {notify, Pid}} = nkpacket:get_user(NkPort),
@@ -68,19 +67,8 @@ conn_init(NkPort) ->
 conn_parse(close, State) ->
 	{ok, State};
 
-conn_parse(Data, #state{notify=Notify}=State) ->
-	case handle(Data, State) of
-		{ok, State1} ->
-			{ok, State1};
-		{reply, Reply, <<>>, State1} ->
-			Notify ! {nkdocker, Reply},
-			{ok, State1};
-		{reply, Reply, Rest, State1} ->
-			Notify ! {nkdocker, Reply},
-			conn_parse(Rest, State1);
-		{stop, normal, State1} ->
-			{stop, normal, State1}
-	end.
+conn_parse(Data, State) ->
+	handle(Data, State).
 
 
 %% @private
@@ -139,10 +127,7 @@ data(Ref, Data, #state{streams=Streams}=State) ->
 
 
 -spec handle(binary(), #state{}) ->
-	{ok, #state{}} | {reply, Reply, Rest::binary(), #state{}} |	{stop, normal, #state{}}
-	when Reply :: 
-		{head, Ref::term(), Status::pos_integer(), Headers::list(), Last::boolean()}
-		| {data, iolist(), Last::boolean()}.
+	{ok, #state{}} | {stop, term(), #state{}}.
 
 handle(<<>>, State) ->
 	{ok, State};
@@ -150,67 +135,57 @@ handle(<<>>, State) ->
 handle(_, #state{streams=[]}=State) ->
 	{stop, normal, State};
 
-handle(Data, #state{in=head, buffer=Buffer}=State) ->
-	Data2 = << Buffer/binary, Data/binary >>,
-	case binary:match(Data, <<"\r\n\r\n">>) of
+handle(Data, #state{next=head, buff=Buff}=State) ->
+	Data1 = << Buff/binary, Data/binary >>,
+	case binary:match(Data1, <<"\r\n\r\n">>) of
 		nomatch -> 
-			{ok, State#state{buffer=Data2}};
+			{ok, State#state{buff=Data1}};
 		{_, _} -> 
-			handle_head(Data2, State#state{buffer= <<>>, in_state={0,0}})
+			handle_head(Data1, State#state{buff = <<>>})
 	end;
 
-handle(Data, #state{in={body, Remaining}, streams=[Ref|RestStreams]}=State) ->
-	case byte_size(Data) of
-		Remaining ->
-			State1 = State#state{in=head, streams=RestStreams},
-			{reply, {data, Ref, Data, true}, <<>>, State1};
-		Length when Length < Remaining ->
-			Remaining1 = Remaining - Length,
-			State1 = State#state{in={body, Remaining1}},
-			{reply, {data, Ref, Data, false}, <<>>, State1};
+handle(Data, #state{next={body, Length}}=State) ->
+	#state{buff=Buff, streams=[Ref|_], notify=Pid} = State,
+	Data1 = << Buff/binary, Data/binary>>,
+	case byte_size(Data1) of
 		Length ->
-			<< Body:Length/binary, Rest/bits >> = Data,
-			State1 = State#state{in=head, streams=RestStreams},
-			{reply, {data, Ref, Body, true}, Rest, State1}
+			Pid ! {nkdocker, Ref, {body, Data1}},
+			{ok, do_next(State)};
+		Size when Size < Length ->
+			{ok, State#state{buff=Data1}};
+		_ ->
+			{Data2, Rest} = erlang:split_binary(Data1, Length),
+			Pid ! {nkdocker, Ref, {body, Data2}},
+			handle(Rest, do_next(State))
 	end;
 
-handle(Data, #state{in=chunked}=State) ->
-	#state{in_state=InState, streams=[Ref|RestStreams], buffer=Buffer} = State,
-	Buffer2 = << Buffer/binary, Data/binary >>,
-	case cow_http_te:stream_chunked(Buffer2, InState) of
+handle(Data, #state{next=chunked}=State) ->
+	#state{buff=Buff, streams=[Ref|_], notify=Pid} = State,
+	Data1 = << Buff/binary, Data/binary>>,
+	case parse_chunked(Data1) of
+		{data, <<>>, Rest} ->
+			Pid ! {nkdocker, Ref, {body, <<>>}},
+			handle(Rest, do_next(State));
+		{data, Chunk, Rest} ->
+			Pid ! {nkdocker, Ref, {chunk, Chunk}},
+			handle(Rest, State#state{buff = <<>>});
 		more ->
-			State#state{buffer=Buffer2};
-		{more, Data2, InState2} ->
-			State1 = State#state{buffer= <<>>, in_state=InState2},
-			{reply, {data, Ref, Data2, false}, <<>>, State1};
-		{more, Data2, Length, InState2} when is_integer(Length) ->
-			State1 = State#state{buffer= <<>>, in_state=InState2},
-			{reply, {data, Ref, Data2, false}, <<>>, State1};
-		{more, Data2, Rest, InState2} ->
-			State1 = State#state{buffer=Rest, in_state=InState2},
-			{reply, {data, Ref, Data2, false}, <<>>, State1};
-		{done, _TotalLength, Rest} ->
-			State1 = State#state{in=head, buffer= <<>>, streams=RestStreams},
-			{reply, {data, Ref, <<>>, true}, Rest, State1};
-		{done, Data2, _TotalLength, Rest} ->
-			State1 = State#state{in=head, buffer= <<>>, streams=RestStreams},
-			{reply, {data, Ref, Data2, true}, Rest, State1}
+			{ok, State#state{buff=Data1}}
 	end;
 
-handle(Data, #state{in=stream, streams=[Ref|_]}=State) ->
-	{reply, {data, Ref, Data, false}, <<>>, State}.
+handle(Data, #state{next=stream, streams=[Ref|_], notify=Pid}=State) ->
+	Pid ! {nkdocker, Ref, {chunk, Data}},
+	{ok, State}.
 
 
 %% @private
 -spec handle_head(binary(), #state{}) ->
-	{reply, Reply, Rest::binary(), #state{}}
-	when Reply :: 
-		{head, Ref::term(), Status::pos_integer(), Headers::list(), Last::boolean()}.
+	{ok, #state{}}.
 
-handle_head(Data, State) ->
-	#state{streams=[Ref|RestStreams]} = State,
+handle_head(Data, #state{streams=[Ref|_], notify=Pid}=State) ->
 	{_Version, Status, _, Rest} = cow_http:parse_status_line(Data),
 	{Headers, Rest2} = cow_http:parse_headers(Rest),
+	Pid ! {nkdocker, Ref, {head, Status, Headers}},
 	Remaining = case lists:keyfind(<<"content-length">>, 1, Headers) of
 		{_, <<"0">>} -> 
 			0;
@@ -230,10 +205,75 @@ handle_head(Data, State) ->
 			end
 	end,
 	State1 = case Remaining of
-		0 -> State#state{in=head, streams=RestStreams};
-		chunked -> State#state{in=chunked};
-		stream -> State#state{in=stream};
-		_ -> State#state{in={body, Remaining}}
+		0 -> 
+			Pid ! {nkdocker, Ref, {body, <<>>}},
+			do_next(State);
+		chunked -> 
+			State#state{next=chunked};
+		stream -> 
+			State#state{next=stream};
+		_ -> 
+			State#state{next={body, Remaining}}
 	end,
-	{reply, {head, Ref, Status, Headers, Remaining==0}, Rest2, State1}.
+	handle(Rest2, State1).
+
+
+
+%% @private
+-spec parse_chunked(binary()) ->
+	{ok, binary(), binary()} | more.
+
+parse_chunked(S) ->
+    case find_chunked_length(S, []) of
+        {ok, Length, Data} ->
+            FullLength = Length + 2,
+            case byte_size(Data) of
+                FullLength -> 
+                    <<Data1:Length/binary, "\r\n">> = Data,
+                    {data, Data1, <<>>};
+                Size when Size < FullLength ->
+                    more;
+                _ ->
+                    {Data1, Rest} = erlang:split_binary(Data, FullLength),
+                    <<Data2:Length/binary, "\r\n">> = Data1,
+                    {data, Data2, Rest}
+            end;
+        more ->
+            more
+    end.
+
+
+%% @private
+-spec find_chunked_length(binary(), string()) ->
+	{ok, integer(), binary()} | more.
+
+find_chunked_length(<<C, "\r\n", Rest/binary>>, Acc) ->
+    {V, _} = lists:foldl(
+        fun(Ch, {Sum, Mult}) ->
+            if 
+                Ch >= $0, Ch =< $9 -> {Sum + (Ch-$0)*Mult, 16*Mult};
+                Ch >= $a, Ch =< $f -> {Sum + (Ch-$a+10)*Mult, 16*Mult};
+                Ch >= $A, Ch =< $F -> {Sum + (Ch-$A+10)*Mult, 16*Mult}
+            end
+        end,
+        {0, 1},
+        [C|Acc]),
+    {ok, V, Rest};
+
+find_chunked_length(<<C, Rest/binary>>, Acc) ->
+    find_chunked_length(Rest, [C|Acc]);
+
+find_chunked_length(<<>>, _Acc) ->
+	more.
+
+
+%% @private
+do_next(#state{streams=[_|Rest]}=State) ->
+	State#state{next=head, buff= <<>>, streams=Rest}.
+
+
+
+
+
+
 

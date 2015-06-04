@@ -18,23 +18,38 @@
 %%
 %% -------------------------------------------------------------------
 
--ifndef(NKDOCKER_HRL_).
--define(NKDOCKER_HRL_, 1).
+%% @doc Utility module.
+-module(nkdocker_util).
+-author('Carlos Gonzalez <carlosj.gf@gmail.com>').
 
-%% ===================================================================
-%% Defines
-%% ===================================================================
-
-
--define(CMD_TIMEOUT, 180000).
-
+-export([remove_exited/1]).
 
 
 %% ===================================================================
-%% Records
+%% Types
 %% ===================================================================
 
+%% @doc Removes all exited containers
+-spec remove_exited(pid()) ->
+	ok | {error, term()}.
 
+remove_exited(Pid) ->
+	case nkdocker:ps(Pid, #{filters=>#{status=>[exited]}}) of
+		{ok, List} ->
+			Ids = [Id || #{<<"Id">>:=Id} <- List],
+			remove_exited(Pid, Ids);
+		{error, Error} ->
+			{error, Error}
+	end.
 
--endif.
+remove_exited(_Pid, []) ->
+	ok;
 
+remove_exited(Pid, [Id|Rest]) ->
+	case nkdocker:rm(Pid, Id) of
+		ok -> 
+			lager:info("Removed ~s", [Id]);
+		{error, Error} ->
+			lager:notice("NOT Removed ~s: ~p", [Id, Error])
+	end,
+	remove_exited(Pid, Rest).
