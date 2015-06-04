@@ -35,14 +35,12 @@
     #{
         async => boolean(),
         force_new => boolean(),
-        headers => [{binary(), binary}],
+        headers => [{binary(), binary()}],
         redirect => string(),           % Send to file
         timeout => pos_integer(),       % Reply and closes connection if reached
-        refresh => boolean()            % Automatic refresh
+        refresh => boolean(),           % Automatic refresh
+        chunks => boolean()             % Send data in chunks
     }.
-
--define(CALL_TIMEOUT, 60000).
--define(CONN_TIMEOUT, 180000).
 
 
 %% ===================================================================
@@ -77,11 +75,14 @@ stop(Pid) ->
 %% @doc Sends a message
 %% Every connection has a timeout, so it will never block
 -spec cmd(pid(), binary(), binary(), binary()|iolist()|map(), cmd_opts()) ->
-    term().
+    ok | {ok, term()|binary()} | {error, term()}.
 
 cmd(Pid, Verb, Path, Body, Opts) ->
     % Path1 = <<"/v1.17", Path/binary>>,
-    gen_server:call(Pid, {cmd, Verb, Path, Body, Opts}, ?CALL_TIMEOUT).
+    case catch gen_server:call(Pid, {cmd, Verb, Path, Body, Opts}, infinity) of
+        {'EXIT', _} -> {error, process_failed};
+        Other -> Other
+    end.
 
 
 %% @doc Sends a in-message data
@@ -89,15 +90,21 @@ cmd(Pid, Verb, Path, Body, Opts) ->
     ok | {error, term()}.
 
 data(Pid, Ref, Data) ->
-    gen_server:call(Pid, {data, {self(), Ref}, Data}, ?CALL_TIMEOUT).
+    case catch gen_server:call(Pid, {data, Ref, Data}, infinity) of
+        {'EXIT', _} -> {error, process_failed};
+        Other -> Other
+    end.
 
 
 %% @doc Finished an asynchronous command
 -spec finish(pid(), reference()) ->
-    {ok, pid()} | {error, term()}.
+    ok | {error, term()}.
 
 finish(Pid, Ref) ->
-    gen_server:call(Pid, {finish, {self(), Ref}}, ?CALL_TIMEOUT).
+    case catch gen_server:call(Pid, {finish_async, Ref}, infinity) of
+        {'EXIT', _} -> {error, process_failed};
+        Other -> Other
+    end.
 
 
 %% @doc Generates creation options
@@ -105,8 +112,11 @@ finish(Pid, Ref) ->
     {ok, map()} | {error, term()}.
 
 create_spec(Pid, Opts) ->
-    {ok, Vsn} = gen_server:call(Pid, get_vsn, ?CALL_TIMEOUT),
-    nkdocker_opts:create_spec(Vsn, Opts).
+    case catch gen_server:call(Pid, get_vsn, infinity) of
+        {ok, Vsn} -> nkdocker_opts:create_spec(Vsn, Opts);
+        {'EXIT', _} -> {error, process_failed}
+    end.
+
 
 %% @private
 refresh_fun(NkPort) ->
@@ -124,14 +134,16 @@ refresh_fun(NkPort) ->
 
 
 -record(cmd, {
-    from :: {pid(), reference()},
+    from_pid :: pid(), 
+    from_ref :: reference(),
     conn_pid :: pid(),
     conn_ref :: reference(),
     mode :: shared | exclusive | async | {redirect, file:io_device()},
+    use_chunks :: boolean(),
     status = 0 :: integer(),
-    headers = [] :: [{binary(), binary()}],
-    body = <<>> :: binary(),
-    chunked :: boolean(),
+    ct :: json | stream | undefined, 
+    chunks = [] :: [term()],
+    stream_buff = <<>> :: binary(),
     user_mon :: reference()
 }).
 
@@ -157,11 +169,11 @@ init([Opts]) ->
     case nkpacket_dns:get_ips(nkdocker, Host) of
         [Ip] ->
             Conn = {nkdocker_protocol, Proto, Ip, Port},
-            Opts2 = maps:with([certfile, keyfile, idle_timeout], Opts1),
+            Opts2 = maps:with([certfile, keyfile], Opts1),
             ConnOpts = Opts2#{
                 monitor => self(), 
                 user => {notify, self()}, 
-                idle_timeout => ?CONN_TIMEOUT
+                idle_timeout => ?CMD_TIMEOUT
             },
             lager:debug("Connecting to ~p, (~p)", [Conn, ConnOpts]),
             case nkpacket:connect({nkdocker, self()}, Conn, ConnOpts) of
@@ -196,13 +208,18 @@ handle_call({cmd, Verb, Path, Body, Opts}, From, State) ->
         Opts1 = case Opts of
             #{redirect:=File} ->
                 case file:open(nklib_util:to_list(File), [write, raw]) of
-                    {ok, Port} -> Opts#{redirect:=Port};
-                    {error, FileError} -> throw({could_not_open, File, FileError})
+                    {ok, Port} -> 
+                        Opts#{redirect:=Port};
+                    {error, FileError} -> 
+                        throw({could_not_open, File, FileError})
                 end;
             _ ->
                 Opts
         end,
+        Async = maps:get(async, Opts, false),
         case send(Verb, Path, Body, Opts1, From, State) of
+            {ok, State1} when Async ->
+                {reply, {async, element(2, From)}, State1};
             {ok, State1} ->
                 {noreply, State1};
             {error, Error} ->
@@ -212,29 +229,24 @@ handle_call({cmd, Verb, Path, Body, Opts}, From, State) ->
         throw:Throw -> {reply, {error, Throw}, State}
     end;
 
-handle_call({data, UserFrom, Data}, _From, #state{cmds=Cmds}=State) ->
-    case lists:keyfind(UserFrom, #cmd.from, Cmds) of
-        #cmd{conn_pid=ConnPid} ->
-            spawn(
-                fun() -> 
-                    case catch nkpacket_connection:send(ConnPid, Data) of
-                        ok -> 
-                            ok;
-                        Error ->
-                            lager:notice("NkDOCKER: Error sending user message: ~p",
-                                         [Error]),
-                            nkpacket_connection:stop(ConnPid, send_error)
-                    end
-                end),
-            {reply, ok, State};
+handle_call({data, Ref, Data}, _From, #state{cmds=Cmds}=State) ->
+    case lists:keyfind(Ref, #cmd.from_ref, Cmds) of
+        #cmd{mode=async, conn_pid=ConnPid}=Cmd ->
+            case catch nkpacket_connection:send(ConnPid, Data) of
+                ok -> 
+                    {reply, ok, State};
+                Error ->
+                    State1 = send_stop(Cmd, {error, send_error}, State),
+                    {reply, {error, Error}, State1}
+            end;
         false ->
             {reply, {error, unknown_ref}, State}
     end;
 
-handle_call({finish, From}, _, #state{cmds=Cmds}=State) ->
-    case lists:keyfind(From, #cmd.from, Cmds) of
+handle_call({finish_async, Ref}, _, #state{cmds=Cmds}=State) ->
+    case lists:keyfind(Ref, #cmd.from_ref, Cmds) of
         #cmd{mode=async}=Cmd ->
-            State1 = do_stop(Cmd, {stop, normal}, State),
+            State1 = send_stop(Cmd, {ok, user_stop}, State),
             {reply, ok, State1};
         _ ->
             {reply, {error, unknown_ref}, State}
@@ -267,48 +279,75 @@ handle_cast(Msg, State) ->
 -spec handle_info(term(), #state{}) ->
     nklib_util:gen_server_info(#state{}).
 
-handle_info({nkdocker, {head, From, Status, Headers, Last}}, State) ->
-    % lager:warning("Head: ~p, ~p, ~p", [Status, Headers, Last]),
-    State1 = parse_head(From, Status, Headers, Last, State),
-    {noreply, State1};
+handle_info({nkdocker, Ref, {head, Status, Headers}}, #state{cmds=Cmds}=State) ->
+    lager:debug("Head: ~p, ~p", [Status, Headers]),
+    case lists:keyfind(Ref, #cmd.from_ref, Cmds) of
+        #cmd{}=Cmd  ->
+            CT = case nklib_util:get_value(<<"content-type">>, Headers) of
+                <<"application/json">> -> json;
+                <<"application/vnd.docker.raw-stream">> -> stream;
+                _ -> undefined
+            end,
+            Cmd1 = Cmd#cmd{status=Status, ct=CT},
+            Cmds1 = lists:keystore(Ref, #cmd.from_ref, Cmds, Cmd1),
+            {noreply, State#state{cmds=Cmds1}};
+        false ->
+            lager:warning("Received unexpected head!"),
+            {noreply, State}
+    end;
 
-handle_info({nkdocker, {data, From, Data, Last}}, State) ->
-    % lager:warning("Data: ~p", [Data]),
-    State1 = parse_data(From, Data, Last, State),
-    {noreply, State1};
+handle_info({nkdocker, Ref, {chunk, Data}}, #state{cmds=Cmds}=State) ->
+    lager:debug("Chunk: ~p", [Data]),
+    case lists:keyfind(Ref, #cmd.from_ref, Cmds) of
+        #cmd{mode={redirect, _}}=Cmd ->
+            {noreply, parse_chunk(Data, Cmd, State)};
+        #cmd{ct=stream}=Cmd ->
+            case parse_stream(Data, Cmd) of
+                {ok, Stream, Cmd1} ->
+                    Cmds1 = lists:keystore(Ref, #cmd.from_ref, Cmds, Cmd1),
+                    {noreply, parse_chunk(Stream, Cmd1, State#state{cmds=Cmds1})};
+                {more, Cmd1} ->
+                    Cmds1 = lists:keystore(Ref, #cmd.from_ref, Cmds, Cmd1),
+                    {noreply, State#state{cmds=Cmds1}}
+            end;
+        #cmd{}=Cmd ->
+            {noreply, parse_chunk(Data, Cmd, State)};
+    false ->
+        lager:warning("Received unexpected chunk!"),
+        {noreply, State}
+    end;
 
-% handle_info({timeout, _, {async, From, Refresh}}, #state{cmds=Cmds}=State) ->
-%     case lists:keyfind(From, #cmd.from, Cmds) of
-%         #cmd{conn_pid=ConnPid}=Cmd ->
-%             spawn(fun() -> nkpacket_connection:send(ConnPid, <<"\r\n">>) end),
-%             Cmd1 = Cmd#cmd{refresh=start_timer(From, Refresh)},
-%             Cmds1 = lists:keystore(From, #cmd.from, Cmds, Cmd1),
-%             {noreply, State#state{cmds=Cmds1}};
-%         false ->
-%             {noreply, State}
-%     end;
+handle_info({nkdocker, Ref, {body, Body}}, #state{cmds=Cmds}=State) ->
+    lager:debug("Body: ~p", [Body]),
+    case lists:keyfind(Ref, #cmd.from_ref, Cmds) of
+        #cmd{status=Status}=Cmd when Status>=200, Status<300 ->
+            {noreply, parse_body(Body, Cmd, State)};
+        #cmd{status=Status}=Cmd ->
+            {noreply, send_stop(Cmd, {error, {get_error(Status), Body}}, State)};
+        false ->
+            lager:warning("Received unexpected body!"),
+            {noreply, State}
+    end;
 
 handle_info({'DOWN', MRef, process, _MPid, _Reason}, #state{cmds=Cmds}=State) ->
-    case lists:keyfind(MRef, #cmd.conn_ref, Cmds) of
+    State1 = case lists:keyfind(MRef, #cmd.conn_ref, Cmds) of
         #cmd{mode=async}=Cmd ->
-            {noreply, do_stop(Cmd, {stop, connection_stopped}, State)};
+            send_stop(Cmd, {error, connection_failed}, State);
         #cmd{mode={redirect, _}}=Cmd ->
-            {noreply, do_stop(Cmd, {error, connection_stopped}, State)};
-        #cmd{headers=Headers, body=Body}=Cmd ->
-            case nklib_util:get_value(<<"content-type">>, Headers) of
-                <<"application/vnd.docker.raw-stream">> ->
-                    {noreply, do_stop(Cmd, {ok, Body}, State)};
-                _ ->
-                    {noreply, do_stop(Cmd, {error, connection_stopped}, State)}
-            end;
+            send_stop(Cmd, {error, connection_failed}, State);
+        #cmd{ct=stream}=Cmd ->
+            parse_body(<<>>, Cmd, State);
+        #cmd{}=Cmd ->
+            send_stop(Cmd, {error, connection_failed}, State);
         false ->
             case lists:keyfind(MRef, #cmd.user_mon, Cmds) of
                 #cmd{}=Cmd ->
-                    {noreply, do_stop(Cmd, none, State)};
+                    send_stop(Cmd, skip, State);
                 false ->
-                    {noreply, State}
+                    State
             end
-    end;
+    end,
+    {noreply, State1};
 
 handle_info(Info, State) -> 
     lager:warning("Module ~p received unexpected info: ~p", [?MODULE, Info]),
@@ -341,10 +380,10 @@ terminate(_Reason, _State) ->
     {ok, binary()} | {stop, term()}.
 
 get_version(#state{conn=Conn, conn_opts=ConnOpts}) ->
-    From = {self(), make_ref()},
+    Ref = make_ref(),
     Msg = {
         http, 
-        From,
+        Ref,
         <<"GET">>, 
         <<"/version">>,
         [{<<"connection">>, <<"keep-alive">>}],
@@ -354,9 +393,9 @@ get_version(#state{conn=Conn, conn_opts=ConnOpts}) ->
         {ok, _} ->
             case
                 receive 
-                    {nkdocker, {head, From, 200, _, false}} ->
+                    {nkdocker, Ref, {head, 200, _}} ->
                         receive
-                            {nkdocker, {data, From, Data, true}} ->
+                            {nkdocker, Ref, {body, Data}} ->
                                 catch jiffy:decode(Data, [return_maps])
                         after
                             5000 -> timeout
@@ -365,7 +404,6 @@ get_version(#state{conn=Conn, conn_opts=ConnOpts}) ->
                     5000 -> timeout
                 end
             of
-
                 #{<<"ApiVersion">>:=ApiVersion} ->
                     {ok, ApiVersion};
                 timeout ->
@@ -391,33 +429,46 @@ send(Method, Path, Body, Opts, From, State) ->
         #{redirect:=Port} -> {redirect, Port};
         _ -> shared
     end,
-    {Id, ConnOpts1, Hds1} = case Mode of
-        shared -> {self(), ConnOpts, [{<<"connection">>, <<"keep-alive">>}]};
-        _ -> {exclusive, ConnOpts#{force_new=>true}, []}
+    Timeout = maps:get(timeout, Opts, ?CMD_TIMEOUT),
+    {Domain, ConnOpts1, Hds1} = case Mode of
+        shared -> 
+            {
+                {nkdocker, self()}, 
+                ConnOpts#{idle_timeout=>Timeout},
+                [{<<"connection">>, <<"keep-alive">>}]
+            };
+        _ -> 
+            {
+                {nkdocker, exclusive},
+                ConnOpts#{idle_timeout=>Timeout, force_new=>true}, 
+                []
+            }
+    end,
+    ConnOpts2 = case Opts of
+        #{refresh:=true} -> 
+            ConnOpts1#{refresh_fun=>fun refresh_fun/1};
+        _ -> 
+            ConnOpts1
     end,
     Hds2 = case Opts of
-        #{headers:=UserHeaders} -> Hds1 ++ UserHeaders;
-        _ -> Hds1
+        #{headers:=Headers} -> 
+            Hds1 ++ Headers;
+        _ -> 
+            Hds1
     end,
-    Msg = {http, From, Method, Path, Hds2, Body},
-    ConnOpts2 = case Opts of
-        #{timeout:=Timeout} -> ConnOpts1#{idle_timeout=>Timeout};
-        #{idle_timeout:=Timeout} -> ConnOpts1#{idle_timeout=>Timeout};
-        _ -> ConnOpts1
-    end,
-    ConnOpts3 = case Opts of
-        #{refresh:=true} -> ConnOpts2#{refresh_fun=>fun refresh_fun/1};
-        _ -> ConnOpts2
-    end,
-    lager:debug("NkDOCKER SEND: ~p ~p", [Msg, ConnOpts3]),
-    case nkpacket:send({nkdocker, Id}, Conn, Msg, ConnOpts3) of
+    {FromPid, FromRef} = From,
+    Msg = {http, FromRef, Method, Path, Hds2, Body},
+    lager:debug("NkDOCKER SEND: ~p ~p", [Msg, ConnOpts2]),
+    case nkpacket:send(Domain, Conn, Msg, ConnOpts2) of
         {ok, NkPort} ->
             ConnPid = nkpacket:get_pid(NkPort),
             Cmd1 = #cmd{
-                from = From, 
+                from_pid = FromPid,
+                from_ref = FromRef, 
                 conn_pid = ConnPid,
                 conn_ref = erlang:monitor(process, ConnPid), 
-                mode = Mode
+                mode = Mode,
+                use_chunks = maps:get(chunks, Opts, false)
             },
             Cmd2 = case Mode of
                 async ->
@@ -426,7 +477,6 @@ send(Method, Path, Body, Opts, From, State) ->
                 _ ->
                     Cmd1
             end,
-
             {ok, State#state{cmds=[Cmd2|Cmds]}};
         {error, Error} ->
             {error, Error}
@@ -434,175 +484,95 @@ send(Method, Path, Body, Opts, From, State) ->
 
 
 %% @private
--spec parse_head({pid(), reference()}, pos_integer(), list(), boolean(), 
-                 #state{}) ->
+-spec parse_chunk(binary(), #cmd{}, #state{}) ->
     #state{}.
 
-parse_head(From, Status, Headers, true, #state{cmds=Cmds}=State) ->
-    case lists:keyfind(From, #cmd.from, Cmds) of
-        #cmd{mode=async}=Cmd ->
-            do_stop(Cmd#cmd{status=Status, headers=Headers}, {stop, no_data}, State);
-        #cmd{}=Cmd ->
-            parse_cmd(Cmd#cmd{status=Status, headers=Headers}, State);
-        false ->
-            lager:warning("Received unexpected head!"),
-            State
+parse_chunk(Data, #cmd{mode={redirect, Port}}=Cmd, State) ->
+    case file:write(Port, Data) of
+        ok ->
+            State;
+        {error, Error} -> 
+            send_stop(Cmd, {error, {file_error, Error}}, State)
     end;
 
-parse_head(From, Status, Headers, false, #state{cmds=Cmds}=State) ->
-    Chunked = lists:member({<<"transfer-encoding">>, <<"chunked">>}, Headers),
-    case lists:keyfind(From, #cmd.from, Cmds) of
-        #cmd{mode=async, from={_, Ref}=From, conn_pid=ConnPid}=Cmd ->
-            gen_server:reply(From, {ok, Ref, ConnPid}),
-            Cmd1 = Cmd#cmd{status=Status, headers=Headers, body= <<>>, chunked=Chunked},
-            Cmds1 = lists:keystore(From, #cmd.from, Cmds, Cmd1),
-            State#state{cmds=Cmds1};
-        #cmd{}=Cmd ->
-            Cmd1 = Cmd#cmd{status=Status, headers=Headers, body= <<>>, chunked=Chunked},
-            Cmds1 = lists:keystore(From, #cmd.from, Cmds, Cmd1),
-            State#state{cmds=Cmds1};
-        false ->
-            lager:warning("Received unexpected head!"),
-            State
-    end.
+parse_chunk(Data, #cmd{mode=async, use_chunks=true}=Cmd, State) ->
+    #cmd{from_ref=Ref, from_pid=Pid} = Cmd,
+    Pid ! {nkdocker, Ref, {data, decode(Data, Cmd)}},
+    State;
 
-
-%% @private
--spec parse_data({pid(), reference()}, binary(), boolean(), #state{}) ->
-    #state{}.
-
-parse_data(From, Data, Last, #state{cmds=Cmds}=State) ->
-    case lists:keyfind(From, #cmd.from, Cmds) of
-        #cmd{mode=async, body=Body}=Cmd ->
-            Cmd1 = Cmd#cmd{body = << Body/binary, Data/binary >>},
-            State1 = parse_async(Cmd1, State),
-            case Last of
-                true -> do_stop(Cmd, {stop, normal}, State1);
-                false -> State1
-            end;
-        #cmd{mode={redirect, Port}}=Cmd ->
-            case file:write(Port, Data) of
-                ok when Last ->
-                    parse_cmd(Cmd#cmd{body=Data}, State);
-                ok ->
-                    State;
-                {error, _Error} ->
-                    do_stop(Cmd, {error, write_error}, State)
-            end;
-        #cmd{body=Body, chunked=Chunked}=Cmd ->
-            Data1 = case Data of
-                <<${, _/binary>> when Chunked -> <<$,, Data/binary>>; 
-                _ -> Data
-            end,
-            Cmd1 = Cmd#cmd{body = << Body/binary, Data1/binary >>},
-            case Last of
-                true ->
-                    parse_cmd(Cmd1, State);
-                false ->
-                    Cmds1 = lists:keystore(From, #cmd.from, Cmds, Cmd1),
-                    State#state{cmds=Cmds1}
-            end;
-        false ->
-            lager:warning("Received unexpected data!"),
-            State
-    end.
-
-
-%% @private
--spec parse_async(#cmd{}, #state{}) ->
-    #state{}.
-
-parse_async(#cmd{from={Pid, Ref}=From}=Cmd, #state{cmds=Cmds}=State) ->
-    case parse_body(Cmd) of
-        {ok, Body, Rest} ->
-            Pid ! {nkdocker, Ref, Body},
-            Cmd1 = Cmd#cmd{body=Rest},
-            Cmds1 = lists:keystore(From, #cmd.from, Cmds, Cmd1),
-            State#state{cmds=Cmds1};
-        more ->
-            Cmds1 = lists:keystore(From, #cmd.from, Cmds, Cmd),
-            State#state{cmds=Cmds1};
-        {error, Error} ->
-            do_stop(Cmd, {stop, Error}, State)
-    end.
-
-
-%% @private
--spec parse_cmd(#cmd{}, #state{}) ->
-    #state{}.
-
-parse_cmd(#cmd{status=Status}=Cmd, State) 
-          when Status==200; Status==201; Status==204 ->
-    Reply = case parse_body(Cmd) of
-        {ok, Body, _} -> {ok, Body};
-        more -> {ok, <<>>};
-        {error, Error} -> {error, Error}
+parse_chunk(Data, Cmd, #state{cmds=Cmds}=State) ->
+    #cmd{chunks=Chunks, use_chunks=UseChunks, from_ref=Ref} = Cmd,
+    Chunk = case UseChunks of
+        true -> decode(Data, Cmd);
+        false -> Data
     end,
-    do_stop(Cmd, Reply, State);
-
-parse_cmd(#cmd{status=Status, body=Body}=Cmd, State) ->
-    Error = case Status of
-        304 -> not_modified;
-        400 -> bad_parameter;
-        404 -> not_found;
-        406 -> not_running;
-        409 -> conflict;
-        500 -> server_error;
-        _ -> Status
-    end,
-    do_stop(Cmd, {error, {Error, Body}}, State).
+    Cmd1 = Cmd#cmd{chunks=[Chunk|Chunks]},
+    Cmds1 = lists:keystore(Ref, #cmd.from_ref, Cmds, Cmd1),
+    State#state{cmds=Cmds1}.
 
 
 %% @private
--spec parse_body(#cmd{}) ->
-    more | {ok, term()} | {error, term()}.
+-spec parse_body(binary(), #cmd{}, #state{}) ->
+    #state{}.
 
-parse_body(#cmd{body = <<>>}) ->
-    more;
+parse_body(Body, #cmd{mode={redirect, Port}}=Cmd, State) ->
+    case file:write(Port, Body) of
+        ok ->
+            send_stop(Cmd, ok, State);
+        {error, Error} -> 
+            send_stop(Cmd, {error, {file_error, Error}}, State)
+    end;
 
-parse_body(#cmd{headers=Headers, mode=Mode, body=Body, chunked=Chunked}) ->
-    case nklib_util:get_value(<<"content-type">>, Headers) of
-        <<"application/json">> ->
-            Body1 = case Body of
-                <<$,, Rest/binary>> when Mode/=async, Chunked -> 
-                    <<$[, Rest/binary, $]>>;
+parse_body(Body, #cmd{chunks=Chunks, use_chunks=UseChunks}=Cmd, State) ->
+    Reply = case Chunks of
+        [] when Body == <<>> -> 
+            {ok, <<>>};
+        [] ->
+            {ok, decode(Body, Cmd)};
+        _ when Body == <<>>, UseChunks == false ->
+            BigBody = list_to_binary(lists:reverse(Chunks)),
+            {ok, decode(BigBody, Cmd)};
+        _ when Body == <<>>, UseChunks == true ->
+            {ok, lists:reverse(Chunks)};
+        _ ->
+            {ok, {invalid_chunked, Chunks, Body}}
+    end,
+    send_stop(Cmd, Reply, State).
+
+
+%% @private
+-spec parse_stream(binary(), #cmd{}) ->
+    {ok, binary(), #cmd{}} | {more, #cmd{}}.
+
+parse_stream(Data, #cmd{stream_buff=Buff}=Cmd) ->
+    Data1 = << Buff/binary, Data/binary>>,
+    case Data1 of
+        _ when byte_size(Data1) < 8 ->
+            {more, Cmd#cmd{stream_buff=Data1}};
+        <<T, 0, 0, 0, Size:32, Msg/binary>> when T==0; T==1; T==2 ->
+            D = case T of 0 -> <<"0:">>; 1 -> <<"1:">>; 2 -> <<"2:">> end,
+            case byte_size(Msg) of
+                Size -> 
+                    {ok, <<D/binary, Msg/binary>>, Cmd#cmd{stream_buff= <<>>}};
+                BinSize when BinSize < Size -> 
+                    {more, Cmd#cmd{stream_buff=Data1}};
                 _ -> 
-                    Body
-            end,
-            case catch jiffy:decode(Body1, [return_maps]) of
-                {'EXIT', _} ->
-                    {error, {invalid_json, Body}};
-                Obj ->
-                    {ok, Obj, <<>>}
-            end;
-        <<"application/vnd.docker.raw-stream">> ->
-            case Body of
-                <<T, 0, 0, 0, Size:32, Rest/binary>> when T==0; T==1; T==2 ->
-                    Type = case T of 0 -> stdin; 1 -> stdout; 2 -> stderr end,
-                    case byte_size(Rest) of
-                        Size -> 
-                            {ok, {Type, Rest}, <<>>};
-                        BinSize when BinSize < Size -> 
-                            more;
-                        _ -> 
-                            {Msg, Rest2} = erlang:split_binary(Rest, Size),
-                            {ok, {Type, Msg}, Rest2}
-                    end;
-                _ ->
-                    {ok, Body, <<>>}
+                    {Msg1, Rest} = erlang:split_binary(Msg, Size),
+                    {ok, <<D/binary, Msg1/binary>>, Cmd#cmd{stream_buff=Rest}}
             end;
         _ ->
-            {ok, Body, <<>>}
+            {ok, Data1, Cmd#cmd{stream_buff= <<>>}}
     end.
 
 
 %% @private
--spec do_stop(#cmd{}, term(), #state{}) ->
+-spec send_stop(#cmd{}, term(), #state{}) ->
     #state{}.
 
-do_stop(Cmd, Msg, #state{cmds=Cmds}=State) ->
+send_stop(Cmd, Reply, #state{cmds=Cmds}=State) ->
     #cmd{
-        from = {Pid, Ref} = From, 
+        from_pid = Pid, 
+        from_ref = Ref,
         conn_pid = ConnPid, 
         conn_ref = ConnRef,
         mode = Mode,
@@ -612,21 +582,50 @@ do_stop(Cmd, Msg, #state{cmds=Cmds}=State) ->
         async ->
             erlang:demonitor(ConnRef),
             erlang:demonitor(UserMon),
-            nkpacket_connection:stop(ConnPid, normal),
-            Pid ! {nkdocker, Ref, Msg};
+            nkpacket_connection:stop(ConnPid, normal);
         shared -> 
-            gen_server:reply(From, Msg);
+            ok;
         exclusive -> 
             erlang:demonitor(ConnRef),
-            nkpacket_connection:stop(ConnPid, normal),
-            gen_server:reply(From, Msg);
+            nkpacket_connection:stop(ConnPid, normal);
         {redirect, Port} ->
             file:close(Port),
             erlang:demonitor(ConnRef),
-            nkpacket_connection:stop(ConnPid, normal),
-            gen_server:reply(From, Msg)
+            nkpacket_connection:stop(ConnPid, normal)
     end,
-    Cmds1 = lists:keydelete(From, #cmd.from, Cmds),
+    case Reply of
+        skip ->
+            ok;
+        _ when Mode==async ->
+            Pid ! {nkdocker, Ref, Reply};
+        _ ->
+            gen_server:reply({Pid, Ref}, Reply)
+    end,
+    Cmds1 = lists:keydelete(Ref, #cmd.from_ref, Cmds),
     State#state{cmds=Cmds1}.
 
+
+%% @private
+get_error(Status) ->
+    case Status of
+        304 -> not_modified;
+        400 -> bad_parameter;
+        401 -> unauthorized;
+        404 -> not_found;
+        406 -> not_running;
+        409 -> conflict;
+        500 -> server_error;
+        _ -> Status
+    end.
+
+
+decode(Data, #cmd{ct=json}) ->
+    case catch jiffy:decode(Data, [return_maps]) of
+        {'EXIT', _} -> {invalid_json, Data};
+        {error, _} -> {invalid_json, Data};
+        Msg -> Msg
+    end;
+
+decode(Data, _) ->
+    Data.
 

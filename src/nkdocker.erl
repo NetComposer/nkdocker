@@ -41,7 +41,6 @@
 -import(nklib_util, [to_binary/1]).
 
 -define(HUB, <<"https://index.docker.io/v1/">>).
--define(TIMEOUT, 180000).
 
 
 
@@ -54,11 +53,10 @@
 -type conn_opts() ::
 	#{	
 		host => text(),					% Default "127.0.0.1"
-		port => inet:port_number(),		% Default 2376
+		port => inet:port_number(),		% Default 2375
 		proto => tcp | tls,				% Default tcp
 		certfile => text(),
-		keyfile => text(),
-		idle_timeout => integer()		% Msecs before closing, default 5000
+		keyfile => text()
 	}.
 
 -type docker_device() ::
@@ -126,7 +124,7 @@
 	server_error | pos_integer(), binary()}.
 
 -type async_msg() ::
-	{nkdocker, reference(), binary()|map()|{stop, term()}}.
+	{nkdocker, reference(), ok | {error, term()} | {data, term()}}.
 
 -type event_type() ::
 	create | destroy | die | exec_create | exec_start | export | kill | oom | 
@@ -164,7 +162,7 @@ stop(Pid) ->
 
 %% @doc Finishes an asynchronous command (see logs/3)
 -spec finish_async(pid(), reference()) ->
-	{ok, pid()} | {error, term()}.
+	ok | {error, term()}.
 
 finish_async(Pid, Ref) ->
 	nkdocker_server:finish(Pid, Ref).
@@ -197,7 +195,7 @@ info(Pid) ->
 %% @doc Pings to the the docker daemon.
 %% It tries to reuse a previous connection.
 -spec ping(pid()) ->
-	{ok, map()} | {error, error()}.
+	ok | {error, error()}.
 
 ping(Pid) ->
 	case get(Pid, <<"/_ping">>, #{}) of
@@ -208,18 +206,17 @@ ping(Pid) ->
 
 %% @doc Equivalent to events(Pid, #{})
 -spec events(pid()) ->
-	{ok, reference()} | {error, error()}.
+	{async, reference()} | {error, error()}.
 
 events(Pid) ->
 	events(Pid, #{}).
 
 
 %% @doc Subscribe to docker events
-%% If ok, a new referece will be returned, along with the connection's pid().
+%% If ok, a new referece will be returned.
 %% Each new docker event will be sent to the calling process as an async_msg().
-%% Should the connection stop, a stop mesage will be sent.
-%% You can use finish_async/2 to remove the subscription using the reference,
-%% or nkpacket_connection:stop(ConnPid, normal) using the connection pid.
+%% Should the connection stop, an error mesage will be sent.
+%% You can use finish_async/2 to remove the subscription using the reference.
 %% When the calling process dies, the connection is automatically removed.
 -spec events(pid(), 
 	#{
@@ -231,12 +228,13 @@ events(Pid) ->
 		since => text(),				% Since this time
 		until => text()					% Up to this time
 	}) ->
-	{ok, reference(), pid()} | {error, error()}.
+	{async, reference()} | {error, error()}.
 
 events(Pid, Opts) ->
 	Path = make_path(<<"/events">>, get_filters(Opts), [filters, since, until]),
-	Opts1 = Opts#{async=>true, force_new=>true, idle_timeout=>5000, refresh=>true},
-	get(Pid, Path, Opts1).
+	DockerOpts = #{chunks=>true, async=>true, force_new=>true, 
+			       timeout=>5000, refresh=>true},
+	get(Pid, Path, DockerOpts).
 
 
 %% @doc Equivalent to login(Pid, User, Pass, Email, ?HUB)
@@ -353,8 +351,7 @@ logs(Pid, Container) ->
 
 %% @doc Get stdout and stderr logs from the container id
 %% You must select on stream at least (stdin, stdout or stderr).
-%% If you use the 'async' option, a reference() and connection pid() will be returned, 
-%% and new data will be sent to the calling process a async_mgs() messages.
+%% If you use the 'async' option, a reference() an will be returned.
 %% (see events/2)
 %% If you use the 'follow' option, the connection will remain opened 
 %% (async is automatically selected)
@@ -367,7 +364,7 @@ logs(Pid, Container) ->
 		timestamps => boolean(),
 		tail => text()
 	}) ->
-	{ok, binary()} | {ok, reference(), pid()} | {error, error()}.
+	{ok, [binary()]} | {async, reference()} | {error, error()}.
 
 logs(Pid, Container, Opts) ->
 	Path1 = list_to_binary([<<"/containers/">>, Container, <<"/logs">>]),
@@ -375,11 +372,11 @@ logs(Pid, Container, Opts) ->
 	Path2 = make_path(Path1, Opts, UrlOpts),
 	case Opts of 
 		#{follow:=true} ->
-			get(Pid, Path2, #{async=>true, idle_timeout=>5000, refresh=>true});
+			get(Pid, Path2, #{chunks=>true, async=>true, timeout=>5000, refresh=>true});
 		#{async:=true} ->
-			get(Pid, Path2, #{async=>true});
+			get(Pid, Path2, add_timeout(Opts, #{chunks=>true, async=>true}));
 		_ ->
-			get(Pid, Path2, #{force_new=>true})
+			get(Pid, Path2, add_timeout(Opts, #{chunks=>true, force_new=>true}))
 	end.
 
 
@@ -400,20 +397,17 @@ diff(Pid, Container) ->
 export(Pid, Container, File) ->
 	Path = list_to_binary([<<"/containers/">>, Container, <<"/export">>]),
 	Redirect = nklib_util:to_list(File),
-	case get(Pid, Path, #{redirect=>Redirect, timeout=>?TIMEOUT}) of
-		{ok, <<>>} -> ok;
-		{error, Error} -> {error, Error}
-	end.
+	get(Pid, Path, #{redirect=>Redirect}).
 
 
 %% @doc Get container stats based on resource usage.
-%% A reference and connection pid will be returned (see events/2).
+%% A reference will be returned (see events/2).
 -spec stats(pid(), text()) ->
-	{ok, reference(), pid()} | {error, error()}.
+	{async, reference()} | {error, error()}.
 
 stats(Pid, Container) ->
 	Path = list_to_binary([<<"/containers/">>, Container, <<"/stats">>]),
-	get(Pid, Path, #{async=>true, idle_timeout=>5000}).
+	get(Pid, Path, #{async=>true, chunks=>true}).
 
 
 %% @doc Resize the TTY for container with id. 
@@ -426,7 +420,7 @@ resize(Pid, Container, W, H) ->
 	Path1 = list_to_binary([<<"/containers/">>, Container, <<"/resize">>]),
 	Path2 = make_path(Path1, #{h=>H, w=>W}, [h, w]),
 	case post(Pid, Path2, #{}) of
-		{ok, <<>>} -> ok;
+		{ok, _} -> ok;
 		{error, Error} -> {error, Error}
 	end.
 
@@ -459,8 +453,7 @@ stop(Pid, Container) ->
 stop(Pid, Container, Opts) ->
 	Path1 = list_to_binary([<<"/containers/">>, Container, <<"/stop">>]),
 	Path2 = make_path(Path1, Opts, [t]),
-	Timeout = 2 * maps:get(t, Opts, ?TIMEOUT),
-	case post(Pid, Path2, #{force_new=>true, timeout=>Timeout}) of
+	case post(Pid, Path2, #{force_new=>true}) of
 		{ok, _} -> ok;
 		{error, Error} -> {error, Error}
 	end.
@@ -482,8 +475,7 @@ restart(Pid, Container) ->
 restart(Pid, Container, Opts) ->
 	Path1 = list_to_binary([<<"/containers/">>, Container, <<"/restart">>]),
 	Path2 = make_path(Path1, Opts, [t]),
-	Timeout = 2 * maps:get(t, Opts, ?TIMEOUT),
-	case post(Pid, Path2, #{force_new=>true, timeout=>Timeout}) of
+	case post(Pid, Path2, #{force_new=>true}) of
 		{ok, _} -> ok;
 		{error, Error} -> {error, Error}
 	end.
@@ -553,7 +545,7 @@ unpause(Pid, Container) ->
 
 %% @doc Equivalent to attach(Pid, Container, #{stream=>true, stdin=>true, stdout=>true}
 -spec attach(pid(), text()) ->
-	{ok, reference()} | {error, error()}.
+	{async, reference()} | {error, error()}.
 
 attach(Pid, Container) ->
 	attach(Pid, Container, #{stream=>true, stdin=>true, stdout=>true}).
@@ -566,7 +558,7 @@ attach(Pid, Container) ->
 %% When created with the TTY setting, the stream is the raw data from the process 
 %% PTY and client's stdin. When the TTY is disabled, then the stream is multiplexed
 %% to separate stdout and stderr.
-%% (received messages will be {stdin|stdout|stderr, binary()})
+%% (received messages will be like "0:...", "1:...", "2:..." or "X:...")
 -spec attach(pid(), text(), 
 	#{
 		async => boolean(),
@@ -577,7 +569,7 @@ attach(Pid, Container) ->
 		stderr => boolean(),		% If logs, return stderr log. If stream, attach
 		timeout => pos_integer()	% Timeout before closing the connection (secs)
 	}) ->
-	{ok, binary} | {ok, reference(), pid()} | {error, error()}.
+	{ok, [binary()]} | {async, reference()} | {error, error()}.
 
 attach(Pid, Container, Opts) ->
 	Path1 = list_to_binary([<<"/containers/">>, Container, <<"/attach">>]),
@@ -585,12 +577,11 @@ attach(Pid, Container, Opts) ->
 	Path2 = make_path(Path1, Opts, UrlOpts),
 	case Opts of
 		#{stream:=true} ->
-			Timeout = maps:get(timeout, Opts, 3600000),
-			post(Pid, Path2, #{async=>true, timeout=>Timeout});
+			post(Pid, Path2, add_timeout(Opts, #{chunks=>true, async=>true}));
 		#{async:=true} ->
-			post(Pid, Path2, #{async=>true});
+			post(Pid, Path2, add_timeout(Opts, #{chunks=>true, async=>true}));
 		_ ->
-			post(Pid, Path2, #{force_new=>true})
+			post(Pid, Path2, add_timeout(Opts, #{chunks=>true, force_new=>true}))
 	end.
 
 
@@ -612,14 +603,11 @@ wait(Pid, Container) ->
 
 %% @doc Waits for a container to stop, returning the exit code
 -spec wait(pid(), text(), integer()) ->
-	{ok, integer()} | {error, error()}.
+	{ok, map()} | {error, error()}.
 
 wait(Pid, Container, Timeout) ->
 	Path = list_to_binary([<<"/containers/">>, Container, <<"/wait">>]),
-	case post(Pid, Path, #{force_new=>true, timeout=>Timeout}) of
-		{ok, #{<<"StatusCode">> := Code}} -> {ok, Code};
-		{error, Error} -> {error, Error}
-	end.
+	post(Pid, Path, #{force_new=>true, timeout=>Timeout}).
 
 
 %% @doc Equivalent to rm(Pid, Container, #{})
@@ -642,10 +630,10 @@ rm(Pid, Container, Opts) ->
 	Path1 = list_to_binary([<<"/containers/">>, Container]),
 	Path2 = make_path(Path1, Opts, [force, v]),
 	case del(Pid, Path2, #{force_new=>true}) of
-		{ok, <<>>} -> ok;
+		{ok, _} -> ok;
 		{error, Error} -> {error, Error}
 	end.
-
+ 	
 
 %% @doc Copy files or folders from a container to a TAR file
 -spec cp(pid(), text(), text(), text()) ->
@@ -655,10 +643,7 @@ cp(Pid, Container, ContPath, File) ->
 	Path = list_to_binary([<<"/containers/">>, Container, <<"/copy">>]),
 	Body = #{'Resource' => to_binary(ContPath)},
 	Redirect = nklib_util:to_list(File),
-	case post(Pid, Path, Body, #{redirect=>Redirect}) of
-		{ok, <<>>} -> ok;
-		{error, Error} -> {error, Error}
-	end.
+	post(Pid, Path, Body, #{redirect=>Redirect}).
 
 
 
@@ -706,8 +691,7 @@ build(Pid, TarBin) ->
 %% the alternate build instructions file to use.
 %% The archive may include any number of other files, which will be accessible 
 %% in the build context (See the ADD build command).
-%% If you the 'async' option, a reference and connection pid will be returned
-%% (see events/2).
+%% If you the 'async' option, a reference will be returned (see events/2).
 -spec build(pid(), binary(), 
 	#{
 		async => boolean(),		% See description for logs/3
@@ -723,31 +707,30 @@ build(Pid, TarBin) ->
 		memswap => integer(),   % Total memory (memory + swap), -1 to disable swap
 		cpushares => integer(),	% CPU shares (relative weight)
 		cpusetcpus => integer(),% CPUs in which to allow exection, e.g., 0-3, 0,1
-		timeout => integer(),	% time to wait for sync requests
+		timeout => integer(),	% time to wait before timeout
 		username => text(),		% 
 		password => text(),		% Use this info to log to a remote
 		email => text(),		% registry to pull
 		serveraddress => text() %
 	}) ->
-	{ok, [map()]} | {ok, reference(), pid()} | {error, error()}.
+	{ok, [map()]} | {async, reference()} | {error, error()}.
 
 build(Pid, TarBin, Opts) ->
 	UrlOpts = [dockerfile, t, remote, q, nocache, pull, rm, forcerm, memory, memswap,
 	           cpushares, cpusetcpus],
 	Path = make_path(<<"/build">>, Opts, UrlOpts),
-	PostOpts1 = #{
+	DockerOpts1 = #{
+		chunks => true,
 		async => maps:get(async, Opts, false),
 		force_new => true, 
-		headers => [{<<"content_type">>, <<"application/tar">>}],
-		timeout => maps:get(timeout, Opts, ?TIMEOUT)
+		headers => [{<<"content_type">>, <<"application/tar">>}]
 	},
-	PostOpts2 = add_authconfig(Opts, PostOpts1),
-	post(Pid, Path, TarBin, PostOpts2).
+	DockerOpts2 = add_authconfig(Opts, DockerOpts1),
+	post(Pid, Path, TarBin, add_timeout(Opts, DockerOpts2)).
 
 
 %% @doc Create an image, either by pulling it from the registry or by importing it
-%% If you the 'async' option, a reference and connection pid will be returned
-%% (see events/2).
+%% If you the 'async' option, a reference will be returned (see events/2).
 -spec create_image(pid(), 
 	#{
 		async => boolean(),		% See description for logs/2
@@ -761,19 +744,19 @@ build(Pid, TarBin, Opts) ->
 		email => text(),
 		serveraddress => text()
 	}) ->
-	{ok, [map()]} | {ok, reference(), pid()} | {error, error()}.
+	{ok, [map()]} | {async, reference()} | {error, error()}.
 
 create_image(Pid, Opts) ->
 	UrlOpts = [fromImage, fromSrc, repo, tag, registry],
 	Path = make_path(<<"/images/create">>, Opts, UrlOpts),
-	PostOpts1 = #{
+	DockerOpts1 = #{
+		chunks => true,
 		async => maps:get(async, Opts, false),
 		force_new => true, 
-		headers => [{<<"content_type">>, <<"application/tar">>}],
-		timeout => maps:get(timeout, Opts, ?TIMEOUT)
+		headers => [{<<"content_type">>, <<"application/tar">>}]
 	},
-	PostOpts2 = add_authconfig(Opts, PostOpts1),
-	post(Pid, Path, PostOpts2).
+	DockerOpts2 = add_authconfig(Opts, DockerOpts1),
+	post(Pid, Path, add_timeout(Opts, DockerOpts2)).
 
 
 %% @doc Inspect an image
@@ -801,8 +784,7 @@ history(Pid, Image) ->
 %% must already have been tagged into a repository which references 
 %% that registry host name and port.  This repository name should
 %% then be used in the URL. This mirrors the flow of the CLI.
-%% If you the 'async' option, a reference and connection pid will be returned
-%% (see events/2).
+%% If you the 'async' option, a reference will be returned (see events/2).
 -spec push(pid(), text(),
 	#{
 		async => boolean(),		% See description for logs/2
@@ -812,19 +794,18 @@ history(Pid, Image) ->
 		email => text(),		% registry to pull
 		serveraddress => text() %
 	}) ->
-	{ok, [map()]} | {ok, reference(), pid()} | {error, error()}.
+	{ok, [map()]} | {async, pid()} | {error, error()}.
 
 push(Pid, Name, Opts) ->
 	UrlOpts = [tag],
 	Path1 = list_to_binary([<<"/images/">>, Name, <<"/push">>]),
 	Path2 = make_path(Path1, Opts, UrlOpts),
-	PostOpts1 = #{
+	DockerOpts1 = #{
 		async => maps:get(async, Opts, false),
-		force_new => true, 
-		timeout => maps:get(timeout, Opts, ?TIMEOUT)
+		force_new => true
 	},
-	PostOpts2 = add_authconfig(Opts, PostOpts1),
-	post(Pid, Path2, PostOpts2).
+	DockerOpts2 = add_authconfig(Opts, DockerOpts1),
+	post(Pid, Path2, add_timeout(Opts, DockerOpts2)).
 
 
 %% @doc Tag an image into a repository.
@@ -832,8 +813,8 @@ push(Pid, Name, Opts) ->
 -spec tag(pid(), text(),
 	#{
 		repo => text(),				% The repository to tag in
-		force => boolean(),			%
-		tag => text()				% The new tag name
+		tag => text(),				% The new tag name
+		force => boolean()			%
 	}) ->
 	ok | {error, error()}.
 
@@ -863,15 +844,14 @@ commit(Pid, Container) ->
 		comment => text(),
 		timeout => pos_integer()
 	}) ->
-	{ok, Id::binary(), map()} | {error, error()}.
+	{ok, map()} | {error, error()}.
 
 commit(Pid, Container, Opts) ->
 	UrlOpts = [container, repo, tag, author, comment],
 	Path = make_path(<<"/commit">>, Opts#{container=>Container}, UrlOpts), 
 	case nkdocker_server:create_spec(Pid, Opts) of
 		{ok, Spec} ->
-			Timeout = maps:get(timeout, Opts, ?TIMEOUT),
-			post(Pid, Path, Spec, #{force_new=>true, timeout=>Timeout});
+			post(Pid, Path, Spec, add_timeout(Opts, #{force_new=>true}));
 		{error, Error} ->
 			{error, Error}
 	end.
@@ -892,12 +872,13 @@ rmi(Pid, Image) ->
 		force => boolean(),
 		noprune => boolean()
 	}) ->
-	{ok, [map()]} | {error, error()}.
+	{ok, map()} | {error, error()}.
 
 rmi(Pid, Image, Opts) ->
 	Path1 = list_to_binary([<<"/images/">>, Image]),
 	Path2 = make_path(Path1, Opts, [force, noprune]),
 	del(Pid, Path2, #{}).
+	
 
 
 %% @doc Search images on the repository
@@ -906,13 +887,13 @@ rmi(Pid, Image, Opts) ->
 
 search(Pid, Term) ->
 	Path = make_path(<<"/images/search">>, #{term=>Term}, [term]),
-	get(Pid, Path, #{force_new=>true, timeout=>?TIMEOUT}).
+	get(Pid, Path, #{force_new=>true}).
 
 
 %% @doc Get a tarball containing all images in a repository
 %% Get a tarball containing all images and metadata for the repository specified by name.
 %% If name is a specific name and tag (e.g. ubuntu:latest), then only that image 
-%% (and its parents) are returned. If name is an image ID, similarly only tha image 
+%% (and its parents) are returned. If name is an image ID, similarly only that image 
 %% (and its parents) are returned, but with the exclusion of the 'repositories' file
 %%  in the tarball, as there were no image names referenced.
 -spec get_image(pid(), text(), text()) ->
@@ -921,10 +902,7 @@ search(Pid, Term) ->
 get_image(Pid, Name, File) ->
 	Path = list_to_binary([<<"/images/">>, Name, <<"/get">>]),
 	Redirect = nklib_util:to_list(File),
-	case get(Pid, Path, #{redirect=>Redirect, timeout=>?TIMEOUT}) of
-		{ok, <<>>} -> ok;
-		{error, Error} -> {error, Error}
-	end.
+	get(Pid, Path, #{redirect=>Redirect}).
 
 
 %% @doc Get a tarball containing all images
@@ -936,15 +914,12 @@ get_image(Pid, Name, File) ->
 -spec get_images(pid(), [text()], text()) ->
 	ok | {error, error()}.
 
-get_images(Pid, Names, File) ->
-	Names1 = [["names=", http_uri:encode(nklib_util:to_list(N))] || N <- Names],
+get_images(Pid, NameList, File) ->
+	Names1 = [["names=", http_uri:encode(nklib_util:to_list(N))] || N <- NameList],
 	Names2 = nklib_util:bjoin(Names1, <<"&">>),
 	Path = <<"/images/get?", Names2/binary>>,
 	Redirect = nklib_util:to_list(File),
-	case get(Pid, Path, #{redirect=>Redirect, timeout=>?TIMEOUT}) of
-		{ok, <<>>} -> ok;
-		{error, Error} -> {error, Error}
-	end.
+	get(Pid, Path, #{redirect=>Redirect}).
 
 
 %% @doc Loads a binary with a TAR image file into docker
@@ -952,12 +927,11 @@ get_images(Pid, Names, File) ->
 	ok | {error, error()}.
 
 load(Pid, TarBin) ->
-	PostOpts = #{
+	DockerOpts = #{
 		force_new => true, 
-		headers => [{<<"content_type">>, <<"application/tar">>}],
-		timeout => ?TIMEOUT
+		headers => [{<<"content_type">>, <<"application/tar">>}]
 	},
-	case post(Pid, <<"/images/load">>, TarBin, PostOpts) of
+	case post(Pid, <<"/images/load">>, TarBin, DockerOpts) of
 		{ok, _} -> ok;
 		{error, Error} -> {error, Error}
 	end.
@@ -1011,14 +985,13 @@ exec_start(Pid, Id) ->
 
 %% @doc Starts a previously set up exec instance id. 
 %% TODO: Detach does not seem to work...
-%% If you the 'async' option, a reference and connection pid will be returned
-%% (see events/2).
+%% If you the 'async' option, a reference will be returned (see events/2).
 -spec exec_start(pid(), text(), 
 	#{
 		detach => boolean(),
 		tty => boolean()
 	}) ->
-	{ok, binary()} | {ok, reference(), pid()} | {error, error()}.
+	{ok, map()} | {async, pid()} | {error, error()}.
 
 exec_start(Pid, Id, Opts) ->
 	Path = list_to_binary([<<"/exec/">>, Id, <<"/start">>]),
@@ -1028,10 +1001,9 @@ exec_start(Pid, Id, Opts) ->
     },
 	case Opts of
 		#{detach:=true} ->
-			post(Pid, Path, Spec, #{force_new=>true});
+			post(Pid, Path, Spec, add_timeout(Opts, #{force_new=>true}));
 		_ ->
-			Timeout = maps:get(timeout, Opts, 3600000),
-			post(Pid, Path, Spec, #{async=>true, timeout=>Timeout})
+			post(Pid, Path, Spec, add_timeout(Opts, #{async=>true}))
 	end.
 
 
@@ -1055,10 +1027,11 @@ exec_inspect(Pid, Id) ->
 exec_resize(Pid, Id, W, H) ->
 	Path1 = list_to_binary([<<"/exec/">>, Id, <<"/resize">>]),
 	Path2 = make_path(Path1, #{h=>H, w=>W}, [h, w]),
-	case post(Pid, Path2, #{}) of
-		{ok, <<>>} -> ok;
+	case post(Pid, Path2, #{}) of		
+		{ok, _} -> ok;
 		{error, Error} -> {error, Error}
 	end.
+
 
 
 
@@ -1135,6 +1108,14 @@ add_authconfig(#{username:=User, password:=Pass, email:=Email}=Opts, Res) ->
 
 add_authconfig(_, Res) ->
 	Res.
+
+
+%% @private
+add_timeout(#{timeout:=Timeout}, Map) ->
+	Map#{timeout=>Timeout};
+
+add_timeout(_Opts, Map) ->
+	Map.
 
 
 
