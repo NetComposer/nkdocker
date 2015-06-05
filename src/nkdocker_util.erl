@@ -72,14 +72,7 @@ build(Pid, Tag, TarBin) ->
 
 
 make_tar(List) ->
-	Name = nklib_util:uid(),
-	{ok, Ram} = file:open(Name, [write, read, binary, ram]),
-	lists:foreach(
-		fun({Path, Bin}) -> ok = erl_tar:add({write, Ram}, Bin, Path, []) end,
-		List),
-	{ok, Tar} = file:pread(Ram, 0, 65535),
-	ok = file:close(Ram),
-	Tar.
+	list_to_binary([nkdocker_tar:add(Path, Bin) || {Path, Bin} <- List]).
 
 
 
@@ -117,6 +110,12 @@ wait_async_iter(Ref, Mon) ->
 	receive
 		{nkdocker, Ref, {data, #{<<"stream">> := Text}}} ->
 			io:format("~s", [Text]),
+			wait_async_iter(Ref, Mon);
+		{nkdocker, Ref, {data, #{<<"status">> := Text}}} ->
+			io:format("~s", [Text]),
+			wait_async_iter(Ref, Mon);
+		{nkdocker, Ref, {data, Data}} ->
+			io:format("~p\n", [Data]),
 			wait_async_iter(Ref, Mon);
 		{nkdocker, Ref, {ok, _}} ->
 			ok;
