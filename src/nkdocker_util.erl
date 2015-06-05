@@ -22,11 +22,11 @@
 -module(nkdocker_util).
 -author('Carlos Gonzalez <carlosj.gf@gmail.com>').
 
--export([remove_exited/1]).
-
+-export([remove_exited/1, build/3]).
+-export([make_tar/1]).
 
 %% ===================================================================
-%% Types
+%% Public
 %% ===================================================================
 
 %% @doc Removes all exited containers
@@ -42,6 +42,56 @@ remove_exited(Pid) ->
 			{error, Error}
 	end.
 
+%% @doc 
+-spec build(pid(), string()|binary(), binary()) ->
+	ok | {error, term()}.
+
+build(Pid, Tag, TarBin) ->
+	case nkdocker:inspect_image(Pid, Tag) of
+    	{ok, _} ->
+    		ok;
+		{error, {not_found, _}} ->
+			lager:notice("Building docker image ~s", [Tag]),
+    		case nkdocker:build(Pid, TarBin, #{t=>Tag, async=>true}) of
+    			{async, Ref} ->
+    				case wait_async(Pid, Ref) of
+    					ok ->
+    						case nkdocker:inspect_image(Pid, Tag) of
+    							{ok, _} -> ok;
+    							_ -> {error, image_not_built}
+    						end;
+    					{error, Error} ->
+    						{error, Error}
+    				end;
+    			{error, Error} ->
+    				{error, {build_error, Error}}
+    		end;
+    	{error, Error} ->
+    		{error, {inspect_error, Error}}
+    end.
+
+
+make_tar(List) ->
+	Name = nklib_util:uid(),
+	{ok, Ram} = file:open(Name, [write, read, binary, ram]),
+	lists:foreach(
+		fun({Path, Bin}) -> ok = erl_tar:add({write, Ram}, Bin, Path, []) end,
+		List),
+	{ok, Tar} = file:pread(Ram, 0, 65535),
+	ok = file:close(Ram),
+	Tar.
+
+
+
+
+
+
+%% ===================================================================
+%% Private
+%% ===================================================================
+
+
+%% @private
 remove_exited(_Pid, []) ->
 	ok;
 
@@ -53,3 +103,31 @@ remove_exited(Pid, [Id|Rest]) ->
 			lager:notice("NOT Removed ~s: ~p", [Id, Error])
 	end,
 	remove_exited(Pid, Rest).
+
+
+%% @private
+wait_async(Pid, Ref) ->
+	Mon = monitor(process, Pid),
+	Result = wait_async_iter(Ref, Mon),
+	demonitor(Mon),
+	Result.
+
+
+wait_async_iter(Ref, Mon) ->
+	receive
+		{nkdocker, Ref, {data, #{<<"stream">> := Text}}} ->
+			io:format("~s", [Text]),
+			wait_async_iter(Ref, Mon);
+		{nkdocker, Ref, {ok, _}} ->
+			ok;
+		{nkdocker, Ref, {error, Reason}} ->
+			{error, Reason};
+		{nkdocker, Ref, Other} ->
+			lager:warning("Unexpected msg: ~p", [Other]),
+			wait_async_iter(Ref, Mon);
+		{'DOWN', Mon, process, _Pid, _Reason} ->
+			{error, process_failed}
+	after 
+		180000 ->
+			{error, timeout}
+	end.
