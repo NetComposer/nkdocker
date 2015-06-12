@@ -22,7 +22,7 @@
 -module(nkdocker_util).
 -author('Carlos Gonzalez <carlosj.gf@gmail.com>').
 
--export([remove_exited/1, build/3]).
+-export([remove_exited/0, remove_exited/1, build/3]).
 -export([make_tar/1]).
 
 %% ===================================================================
@@ -30,17 +30,29 @@
 %% ===================================================================
 
 %% @doc Removes all exited containers
--spec remove_exited(pid()) ->
+-spec remove_exited() ->
 	ok | {error, term()}.
 
-remove_exited(Pid) ->
-	case nkdocker:ps(Pid, #{filters=>#{status=>[exited]}}) of
-		{ok, List} ->
-			Ids = [Id || #{<<"Id">>:=Id} <- List],
-			remove_exited(Pid, Ids);
-		{error, Error} ->
-			{error, Error}
-	end.
+remove_exited() ->
+	remove_exited(#{}).
+
+
+%% @doc Removes all exited containers
+-spec remove_exited(nkdocker:conn_opts()) ->
+	ok | {error, term()}.
+
+remove_exited(Opts) ->
+	Op = fun(Pid) ->
+		case nkdocker:ps(Pid, #{filters=>#{status=>[exited]}}) of
+			{ok, List} ->
+				Ids = [Id || #{<<"Id">>:=Id} <- List],
+				remove_exited(Pid, Ids);
+			{error, Error} ->
+				{error, Error}
+		end
+	end,
+	docker(Opts, Op).
+
 
 %% @doc 
 -spec build(pid(), string()|binary(), binary()) ->
@@ -82,6 +94,18 @@ make_tar(List) ->
 %% ===================================================================
 %% Private
 %% ===================================================================
+
+
+%% @private
+docker(Opts, Fun) ->
+	case nkdocker:start_link(Opts) of
+		{ok, Pid} ->
+			Res = Fun(Pid),
+			nkdocker:stop(Pid),
+			Res;
+		{error, Error} ->
+			{error, Error}
+	end.
 
 
 %% @private
