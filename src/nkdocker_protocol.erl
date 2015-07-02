@@ -81,7 +81,6 @@ conn_encode({http, Ref, Method, Path, Headers, Body}, State) ->
 	
 conn_encode({data, Ref, Data}, State) ->
 	data(Ref, Data, State).
-	
 
 
 %% ===================================================================
@@ -98,7 +97,7 @@ request(Ref, Method, Path, Headers, Body, #state{streams=Streams}=State) ->
 		false -> Headers
 	end,
 	Body1 = case is_map(Body) of
-		true -> jiffy:encode(Body, [pretty]);
+		true -> nklib_json:encode(Body);
 		false -> Body
 	end,
 	Headers2 = [

@@ -27,7 +27,7 @@
 -include_lib("nklib/include/nklib.hrl").
 -include("nkdocker.hrl").
 
--export([start_link/1, start/1, stop/1, finish_async/2]).
+-export([start_link/0, start_link/1, start/0, start/1, stop/1, finish_async/2]).
 -export([version/1, info/1, ping/1, events/1, events/2, login/4, login/5]).
 -export([attach/2, attach/3, attach_send/3, commit/2, commit/3, cp/4, create/3, diff/2,
    		 export/3, inspect/2, kill/2, kill/3, logs/2, logs/3, pause/2, ps/1, ps/2, 
@@ -137,11 +137,27 @@
 
 
 %% @doc Starts and links new docker connection
+-spec start_link() ->
+	{ok, pid()} | {error, term()}.
+
+start_link() ->
+	start_link(#{}).
+
+
+%% @doc Starts and links new docker connection
 -spec start_link(conn_opts()) ->
 	{ok, pid()} | {error, term()}.
 
 start_link(Opts) ->
 	nkdocker_server:start_link(Opts).
+
+
+%% @doc Starts a new docker connection
+-spec start() ->
+	{ok, pid()} | {error, term()}.
+
+start() ->
+	start(#{}).
 
 
 %% @doc Starts a new docker connection
@@ -1096,7 +1112,7 @@ get_filters(Opts) ->
 %% @private
 add_authconfig(#{username:=User, password:=Pass, email:=Email}=Opts, Res) ->
 	Json = 
-		jiffy:encode(
+		nklib_json:encode(
 			#{
 				username => to_binary(User), 
 				password => to_binary(Pass), 

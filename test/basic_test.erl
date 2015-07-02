@@ -58,26 +58,32 @@ basic_test_() ->
 
 conns(C) ->
     %% Stop all connections, if active
-    [nkpacket_connection:stop(N, normal) || N <- nkpacket:get_all({nkdocker, C})],
-    [nkpacket_connection:stop(N, normal) || N <- nkpacket:get_all({nkdocker, exclusive})],
+    nkpacket_connection:stop_all({nkdocker, shared}),
+    nkpacket_connection:stop_all({nkdocker, non_shared}),
     timer:sleep(100),
-
+    [] = nkpacket_connection:get_all({nkdocker, shared}),
+    [] = nkpacket_connection:get_all({nkdocker, non_shared}),
+   
 	{async, Ref} = nkdocker:events(C),
     timer:sleep(50),
     % We have only the events exclusive connection
-    [] = [N || N <- nkpacket:get_all({nkdocker, C})],
-    [#nkport{pid=ConnPid}] = nkpacket:get_all({nkdocker, exclusive}),
-    ConnRef = erlang:monitor(process, ConnPid),
-    % Conns = [N || N <- nkpacket:get_all({nkdocker, exclusive})],
-    % [] = [N || N <-Conns, nkpacket:get_pid(N)/=ConnPid],
+    [] = nkpacket_connection:get_all({nkdocker, shared}),
+    [Pid1] = nkpacket_connection:get_all({nkdocker, non_shared}),
+    ConnRef = erlang:monitor(process, Pid1),
 
     {ok, #{<<"ApiVersion">>:=_}} = nkdocker:version(C),
     {ok, #{<<"Containers">>:=_}} = nkdocker:info(C),
     ok = nkdocker:ping(C),
-    1 = length([N || N <- nkpacket:get_all({nkdocker, C})]),
+    % Now we have the previous and a 'shared' connection
+    [Pid2] = nkpacket_connection:get_all({nkdocker, shared}),
+    [Pid1] = nkpacket_connection:get_all({nkdocker, non_shared}),
     ok = nkdocker:finish_async(C, Ref),
     ?RECV({nkdocker, Ref, {ok, user_stop}}),
-    ?RECV({'DOWN', ConnRef, process, ConnPid, normal}).
+    ?RECV({'DOWN', ConnRef, process, Pid1, normal}),
+    [Pid2] = nkpacket_connection:get_all({nkdocker, shared}),
+    [] = nkpacket_connection:get_all({nkdocker, non_shared}),
+    true = Pid1 /= Pid2,
+    ok.
 
 
 images(C) ->

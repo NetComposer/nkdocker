@@ -64,38 +64,52 @@ stop(_) ->
 
 %% @private
 get_config() ->
-    ConnOpts1 = case os:getenv("DOCKER_HOST") of
+    Proto = get_env(proto, tcp),
+    ConnOpts1 = #{  
+        host => get_env(host, "127.0.0.1"),
+        port => get_env(port, case Proto of tcp -> 2375; tls -> 2376 end),
+        proto => Proto,
+        certfile => nkpacket_config:certfile(),
+        keyfile => nkpacket_config:keyfile()
+    },
+    ConnOpts2 = case os:getenv("DOCKER_HOST") of
         false ->
-            #{};
+            ConnOpts1;
         Host ->
             case nklib_parse:uris(Host) of
                 [#uri{scheme=tcp, domain=Domain, port=Port}] ->
-                    #{host=>Domain, port=>Port, proto=>tcp};
+                    ConnOpts1#{host=>Domain, port=>Port, proto=>tcp};
                 _  ->
-                    #{}
+                    ConnOpts1
             end
     end,
-    ConnOpts2 = case 
+    ConnOpts3 = case 
         os:getenv("DOCKER_TLS") == "1" orelse
         os:getenv("DOCKER_TLS") == "true" orelse
         os:getenv("DOCKER_TLS_VERIFY") == "1" orelse
         os:getenv("DOCKER_TLS_VERIFY") == "true"
     of
-        true -> ConnOpts1#{proto=>tls};
-        false -> ConnOpts1
+        true -> ConnOpts2#{proto=>tls};
+        false -> ConnOpts2
     end,
-    ConnOpts3 = case os:getenv("DOCKER_CERT_PATH") of
+    ConnOpts4 = case os:getenv("DOCKER_CERT_PATH") of
         false -> 
-            ConnOpts2;
+            ConnOpts3;
         Path ->
-            ConnOpts2#{
+            ConnOpts3#{
                 certfile => filename:join(Path, "cert.pem"),
                 keyfile => filename:join(Path, "key.pem")
             }
     end,
-    case map_size(ConnOpts3) of
+    case map_size(ConnOpts4) of
         0 -> ok;
-        _ -> lager:notice("Detected Config: ~p", [ConnOpts3])
+        _ -> lager:notice("Detected Config: ~p", [ConnOpts4])
     end,
-    application:set_env(?APP, conn_config, ConnOpts3).
+    application:set_env(?APP, conn_config, ConnOpts4).
+
+
+%% @private
+get_env(Key, Default) ->
+    application:get_env(?APP, Key, Default).
+
 

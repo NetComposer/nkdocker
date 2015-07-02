@@ -121,7 +121,7 @@ create_spec(Pid, Opts) ->
 %% @private
 refresh_fun(NkPort) ->
     % lager:debug("Refreshing connection"),
-    case nkpacket_connection:send(NkPort, <<"\r\n">>) of
+    case nkpacket_connection_lib:raw_send(NkPort, <<"\r\n">>) of
         ok -> true;
         _ -> false
     end.
@@ -161,26 +161,25 @@ refresh_fun(NkPort) ->
 
 init([Opts]) ->
     process_flag(trap_exit, true),      %% Allow calls to terminate/2
-    EnvConfig = application:get_env(nkdocker, conn_config, #{}),
+    {ok, EnvConfig} = application:get_env(nkdocker, conn_config),
     Opts1 = maps:merge(EnvConfig, Opts),
-    Host = maps:get(host, Opts1, "127.0.0.1"),
-    Port = maps:get(port, Opts1, 2375),
-    Proto = maps:get(proto, Opts1, tcp),
-    case nkpacket_dns:get_ips(nkdocker, Host) of
+    #{host:=Host, port:=Port, proto:=Proto} = Opts1,
+    case nkpacket_dns:get_ips(Host) of
         [Ip] ->
             Conn = {nkdocker_protocol, Proto, Ip, Port},
-            Opts2 = maps:with([certfile, keyfile], Opts1),
-            ConnOpts = Opts2#{
+            ConnOpts1 = maps:with([certfile, keyfile], Opts1),
+            ConnOpts2 = ConnOpts1#{
+                group => {nkdocker, shared},
                 monitor => self(), 
                 user => {notify, self()}, 
                 idle_timeout => ?CMD_TIMEOUT
             },
-            lager:debug("Connecting to ~p, (~p)", [Conn, ConnOpts]),
-            case nkpacket:connect({nkdocker, self()}, Conn, ConnOpts) of
-                {ok, _} ->
+            lager:debug("Connecting to ~p, (~p)", [Conn, ConnOpts2]),
+            case nkpacket:connect(Conn, ConnOpts2) of
+                {ok, _Pid} ->
                     State = #state{
                         conn = Conn,
-                        conn_opts = ConnOpts,
+                        conn_opts = ConnOpts2,
                         cmds = []
                     },
                     case get_version(State) of
@@ -232,7 +231,7 @@ handle_call({cmd, Verb, Path, Body, Opts}, From, State) ->
 handle_call({data, Ref, Data}, _From, #state{cmds=Cmds}=State) ->
     case lists:keyfind(Ref, #cmd.from_ref, Cmds) of
         #cmd{mode=async, conn_pid=ConnPid}=Cmd ->
-            case catch nkpacket_connection:send(ConnPid, Data) of
+            case catch nkpacket_connection:send(ConnPid, {data, Ref, Data}) of
                 ok -> 
                     {reply, ok, State};
                 Error ->
@@ -389,14 +388,13 @@ get_version(#state{conn=Conn, conn_opts=ConnOpts}) ->
         [{<<"connection">>, <<"keep-alive">>}],
         <<>>
     },
-    case nkpacket:send({nkdocker, self()}, Conn, Msg, ConnOpts) of
+    case nkpacket:send(Conn, Msg, ConnOpts) of
         {ok, _} ->
             case
                 receive 
                     {nkdocker, Ref, {head, 200, _}} ->
                         receive
-                            {nkdocker, Ref, {body, Data}} ->
-                                catch jiffy:decode(Data, [return_maps])
+                            {nkdocker, Ref, {body, Data}} -> nklib_json:decode(Data)
                         after
                             5000 -> timeout
                         end
@@ -429,18 +427,19 @@ send(Method, Path, Body, Opts, From, State) ->
         #{redirect:=Port} -> {redirect, Port};
         _ -> shared
     end,
-    Timeout = maps:get(timeout, Opts, ?CMD_TIMEOUT),
-    {Domain, ConnOpts1, Hds1} = case Mode of
+    {ConnOpts1, Hds1} = case Mode of
         shared -> 
             {
-                {nkdocker, self()}, 
-                ConnOpts#{idle_timeout=>Timeout},
+                ConnOpts,
                 [{<<"connection">>, <<"keep-alive">>}]
             };
         _ -> 
             {
-                {nkdocker, exclusive},
-                ConnOpts#{idle_timeout=>Timeout, force_new=>true}, 
+                ConnOpts#{
+                    group => {nkdocker, non_shared}, 
+                    idle_timeout => maps:get(timeout, Opts, ?CMD_TIMEOUT),
+                    force_new => true
+                },
                 []
             }
     end,
@@ -459,9 +458,8 @@ send(Method, Path, Body, Opts, From, State) ->
     {FromPid, FromRef} = From,
     Msg = {http, FromRef, Method, Path, Hds2, Body},
     lager:debug("NkDOCKER SEND: ~p ~p", [Msg, ConnOpts2]),
-    case nkpacket:send(Domain, Conn, Msg, ConnOpts2) of
-        {ok, NkPort} ->
-            ConnPid = nkpacket:get_pid(NkPort),
+    case nkpacket:send(Conn, Msg, ConnOpts2) of
+        {ok, ConnPid} ->
             Cmd1 = #cmd{
                 from_pid = FromPid,
                 from_ref = FromRef, 
@@ -620,9 +618,8 @@ get_error(Status) ->
 
 
 decode(Data, #cmd{ct=json}) ->
-    case catch jiffy:decode(Data, [return_maps]) of
-        {'EXIT', _} -> {invalid_json, Data};
-        {error, _} -> {invalid_json, Data};
+    case nklib_json:decode(Data) of
+        error -> {invalid_json, Data};
         Msg -> Msg
     end;
 
