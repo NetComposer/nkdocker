@@ -24,15 +24,13 @@ Before sending any operation, you must connect to the Docker daemon, calling [`n
 		port => inet:port_number(),		% Default 2375
 		proto => tcp | tls,				% Default tcp
 		certfile => text(),
-		keyfile => text(),
-		idle_timeout => integer()		% Msecs, default 5000
+		keyfile => text()
 	}.
 ```
 
 You can now start sending commands to the Docker daemon. Some commands (usually quick, non-blocking commands) will try to reuse the same command, while other commands will start a fresh connection and will close it when finished (See the documentation of each command at [nkdocker.erl](src/nkdocker.erl)).
 
-
-You can also indicate the connection parameters using standard OS environment variables. The follow keys are recognized:
+These parameters (host, port, proto, certfile and keyfile) can also be included as standard Erlang application environment variable for `nkdocker`. You can also indicate the connection parameters using standard OS environment variables. The follow keys are recognized:
 
 Key|Value
 ---|---
@@ -47,7 +45,7 @@ DOCKER_CERT_PATH|Path to the directory containing 'cert.pem' and 'key.pem'
 After connection to the daemon, you can start sending commands, for example (the OS variables DOCKER_HOST, DOCKER_TLS and DOCKER_CERT must be setted for this to work):
 
 ```erlang
-> {ok, P} = nkdocker:start_link(#{}).
+> {ok, P} = nkdocker:start_link().
 {ok, <...>}
 
 > nkdocker:version(P).
@@ -79,7 +77,7 @@ NkPACKET allows several async commands, for example to get Docker events:
 
 ```erlang
 > nkdocker:events(P).
-{ok, #Ref<0.0.3.103165>, <<Pid>>}
+{ok, #Ref<0.0.3.103165>}
 ```
 
 Now every selected event (all for this example) will be sent to the process:
