@@ -167,7 +167,7 @@ init([Opts]) ->
     case nkpacket_dns:get_ips(Host) of
         [Ip] ->
             Conn = {nkdocker_protocol, Proto, Ip, Port},
-            ConnOpts1 = maps:with([certfile, keyfile], Opts1),
+            ConnOpts1 = maps:with([tls_opts], Opts1),
             ConnOpts2 = ConnOpts1#{
                 group => {nkdocker, shared},
                 monitor => self(), 

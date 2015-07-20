@@ -55,8 +55,7 @@
 		host => text(),					% Default "127.0.0.1"
 		port => inet:port_number(),		% Default 2375
 		proto => tcp | tls,				% Default tcp
-		certfile => text(),
-		keyfile => text()
+		ssl_opts => nkpacket:ssl_opts()
 	}.
 
 -type docker_device() ::
