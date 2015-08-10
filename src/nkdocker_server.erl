@@ -164,7 +164,7 @@ init([Opts]) ->
     {ok, EnvConfig} = application:get_env(nkdocker, conn_config),
     Opts1 = maps:merge(EnvConfig, Opts),
     #{host:=Host, port:=Port, proto:=Proto} = Opts1,
-    case nkpacket_dns:get_ips(Host) of
+    case nkpacket_dns:ips(Host) of
         [Ip] ->
             Conn = {nkdocker_protocol, Proto, Ip, Port},
             ConnOpts1 = maps:with([tls_opts], Opts1),
