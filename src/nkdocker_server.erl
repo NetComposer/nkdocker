@@ -276,7 +276,7 @@ handle_cast(Msg, State) ->
 
 %% @private
 -spec handle_info(term(), #state{}) ->
-    nklib_util:gen_server_info(#state{}).
+    {noreply, #state{}} | {stop, term(), #state{}}.
 
 handle_info({nkdocker, Ref, {head, Status, Headers}}, #state{cmds=Cmds}=State) ->
     lager:debug("Head: ~p, ~p", [Status, Headers]),
@@ -355,7 +355,7 @@ handle_info(Info, State) ->
 
 %% @private
 -spec code_change(term(), #state{}, term()) ->
-    nklib_util:gen_server_code_change(#state{}).
+    {ok, #state{}}.
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
@@ -363,7 +363,7 @@ code_change(_OldVsn, State, _Extra) ->
 
 %% @private
 -spec terminate(term(), #state{}) ->
-    nklib_util:gen_server_terminate().
+    ok.
 
 terminate(_Reason, _State) ->  
     ok.
