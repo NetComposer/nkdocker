@@ -313,7 +313,11 @@ create_spec(Vsn, [{publish, List}|Rest], AccA, AccB) when is_list(List) ->
             end,
             {
                 maps:put(Cont, #{}, ExpAcc), 
-                maps:put(Cont, #{'HostIp'=>Ip, 'HostPort'=>HostPort}, BindAcc)
+                maps:put(Cont, 
+			 lists:usort(
+			   [ #{'HostIp'=>Ip, 'HostPort'=>HostPort} | 
+			   maps:get(Cont, BindAcc, [])]), 
+			 BindAcc)
             }
         end,
         {Expose, #{}},

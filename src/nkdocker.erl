@@ -68,8 +68,8 @@
 
 -type docker_publish() ::
 	docker_port() |												% Container
-	{docker_port() | inet:port_number()} |						% Container, Host
-	{docker_port() | inet:port_number(), inet:ip_address()}.	% Container, Host, Ip
+	{docker_port(), inet:port_number()} |						% Container, Host
+	{docker_port(), inet:port_number(), inet:ip_address()}.	% Container, Host, Ip
 
 
 -type create_opts() ::
