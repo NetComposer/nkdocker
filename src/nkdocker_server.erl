@@ -619,7 +619,7 @@ get_error(Status) ->
 
 decode(Data, #cmd{ct=json}) ->
     case nklib_json:decode(Data) of
-        error -> {invalid_json, Data};
+        {error, _} -> {invalid_json, Data};
         Msg -> Msg
     end;
 
