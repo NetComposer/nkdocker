@@ -24,6 +24,7 @@
 -behaviour(application).
 
 -export([start/0, start/2, stop/1]).
+-export([get_env/2]).
 
 -include("nkdocker.hrl").
 -include_lib("nklib/include/nklib.hrl").
@@ -53,7 +54,9 @@ start(_Type, _Args) ->
     {ok, Pid} = nkdocker_sup:start_link(),
     {ok, Vsn} = application:get_key(nkdocker, vsn),
     lager:notice("NkDOCKER v~s has started.", [Vsn]),
-    get_config(),
+    ConnOpts = get_config(),
+    lager:notice("Default config: ~p", [ConnOpts]),
+    application:set_env(?APP, conn_config, ConnOpts),
     {ok, Pid}.
 
 
@@ -64,48 +67,71 @@ stop(_) ->
 
 %% @private
 get_config() ->
-    Proto = get_env(proto, tcp),
-    ConnOpts1 = #{  
-        host => get_env(host, "127.0.0.1"),
-        port => get_env(port, case Proto of tcp -> 2375; tls -> 2376 end),
-        proto => Proto,
-        certfile => nkpacket_config:certfile(),
-        keyfile => nkpacket_config:keyfile()
-    },
-    ConnOpts2 = case os:getenv("DOCKER_HOST") of
+    case os:getenv("DOCKER_HOST") of
         false ->
-            ConnOpts1;
-        Host ->
-            case nklib_parse:uris(Host) of
-                [#uri{scheme=tcp, domain=Domain, port=Port}] ->
-                    ConnOpts1#{host=>Domain, port=>Port, proto=>tcp};
-                _  ->
-                    ConnOpts1
-            end
+            case get_env(proto, tcp) of
+                tcp -> 
+                    #{
+                        host => get_env(host, "127.0.0.1"),
+                        port => get_env(port, 2375),
+                        proto => tcp
+                    };
+                tls ->
+                    BaseTLSOpts = nkpacket_config:tls_opts(),
+                    UserTLSOpts = nklib_util:to_map(get_env(tls_opts, #{})),
+                    #{
+                        host => get_env(host, "127.0.0.1"),
+                        port => get_env(port, 2376),
+                        proto => tls,
+                        tls_opts => maps:merge(BaseTLSOpts, UserTLSOpts)
+                    }
+            end;
+        _ ->
+            get_env_config()
+    end.
+
+
+get_env_config() ->
+    case nklib_parse:uris(os:getenv("DOCKER_HOST")) of
+        [#uri{scheme=tcp, domain=Domain, port=Port}] -> 
+            ok;
+        _  -> 
+            Domain = Port = error("Unrecognized DOCKER_HOST env")
     end,
-    ConnOpts3 = case 
+    case 
         os:getenv("DOCKER_TLS") == "1" orelse
         os:getenv("DOCKER_TLS") == "true" orelse
         os:getenv("DOCKER_TLS_VERIFY") == "1" orelse
         os:getenv("DOCKER_TLS_VERIFY") == "true"
     of
-        true -> ConnOpts2#{proto=>tls};
-        false -> ConnOpts2
-    end,
-    ConnOpts4 = case os:getenv("DOCKER_CERT_PATH") of
-        false -> 
-            ConnOpts3;
-        Path ->
-            ConnOpts3#{
-                certfile => filename:join(Path, "cert.pem"),
-                keyfile => filename:join(Path, "key.pem")
+        true ->
+            BaseTLSOpts = nkpacket_config:tls_opts(),
+            case os:getenv("DOCKER_CERT_PATH") of
+                false ->
+                    #{
+                        host => Domain,
+                        port => Port,
+                        proto => tls, 
+                        tls_opts => BaseTLSOpts
+                    };
+                Path ->
+                    #{
+                        host => Domain,
+                        port => Port,
+                        proto => tls, 
+                        tls_opts => BaseTLSOpts#{
+                            certfile => filename:join(Path, "cert.pem"),
+                            keyfile => filename:join(Path, "key.pem")
+                        }
+                    }
+            end;
+        false ->
+            #{
+                host => Domain,
+                port => Port,
+                proto => tcp
             }
-    end,
-    case map_size(ConnOpts4) of
-        0 -> ok;
-        _ -> lager:notice("Detected Config: ~p", [ConnOpts4])
-    end,
-    application:set_env(?APP, conn_config, ConnOpts4).
+    end.
 
 
 %% @private

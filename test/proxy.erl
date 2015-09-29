@@ -32,7 +32,7 @@ start(Opts) ->
     Host = maps:get(host, Opts1, "127.0.0.1"),
     Port = maps:get(port, Opts1, 2375),
     Proto = maps:get(proto, Opts1, tcp),
-    [Ip] = nkpacket_dns:get_ips(?MODULE, Host),
+    [Ip] = nkpacket_dns:ips(?MODULE, Host),
     Conn = {?MODULE, Proto, Ip, Port},
     ListenPort = maps:get(listen_port, Opts1, 12375),
     ListenConn = {?MODULE, tcp, {0,0,0,0}, ListenPort},

@@ -164,10 +164,10 @@ init([Opts]) ->
     {ok, EnvConfig} = application:get_env(nkdocker, conn_config),
     Opts1 = maps:merge(EnvConfig, Opts),
     #{host:=Host, port:=Port, proto:=Proto} = Opts1,
-    case nkpacket_dns:get_ips(Host) of
+    case nkpacket_dns:ips(Host) of
         [Ip] ->
             Conn = {nkdocker_protocol, Proto, Ip, Port},
-            ConnOpts1 = maps:with([certfile, keyfile], Opts1),
+            ConnOpts1 = maps:with([tls_opts], Opts1),
             ConnOpts2 = ConnOpts1#{
                 group => {nkdocker, shared},
                 monitor => self(), 
@@ -276,7 +276,7 @@ handle_cast(Msg, State) ->
 
 %% @private
 -spec handle_info(term(), #state{}) ->
-    nklib_util:gen_server_info(#state{}).
+    {noreply, #state{}} | {stop, term(), #state{}}.
 
 handle_info({nkdocker, Ref, {head, Status, Headers}}, #state{cmds=Cmds}=State) ->
     lager:debug("Head: ~p, ~p", [Status, Headers]),
@@ -355,7 +355,7 @@ handle_info(Info, State) ->
 
 %% @private
 -spec code_change(term(), #state{}, term()) ->
-    nklib_util:gen_server_code_change(#state{}).
+    {ok, #state{}}.
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
@@ -363,7 +363,7 @@ code_change(_OldVsn, State, _Extra) ->
 
 %% @private
 -spec terminate(term(), #state{}) ->
-    nklib_util:gen_server_terminate().
+    ok.
 
 terminate(_Reason, _State) ->  
     ok.
@@ -619,7 +619,7 @@ get_error(Status) ->
 
 decode(Data, #cmd{ct=json}) ->
     case nklib_json:decode(Data) of
-        error -> {invalid_json, Data};
+        {error, _} -> {invalid_json, Data};
         Msg -> Msg
     end;
 

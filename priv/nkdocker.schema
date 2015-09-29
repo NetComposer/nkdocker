@@ -1,0 +1,35 @@
+
+%% @doc Default Docker daemon host
+{mapping, "docker.host", "nkdocker.host", [
+    {default, "127.0.0.1"},
+    {datatype, string}
+]}.
+
+
+%% @doc Default Docker daemon protocol
+{mapping, "docker.proto", "nkdocker.proto", [
+    {default, tcp},
+    {datatype, {enum, [tcp, tls]}}
+]}.
+
+
+%% @doc Default Docker daemon port
+{mapping, "docker.port", "nkdocker.port", [
+    {default, 2375},
+    {datatype, integer}
+]}.
+
+
+%% @doc Default Docker certfile location
+{mapping, "docker.certfile", "nkdocker.certfile", [
+  {datatype, file},
+  {commented, "{{platform_etc_dir}}/cert.pem"}
+]}.
+
+
+%% @doc Default Docker keyfile location
+{mapping, "docker.keyfile", "nkdocker.keyfile", [
+  {datatype, file},
+  {commented, "{{platform_etc_dir}}/key.pem"}
+]}.
+
