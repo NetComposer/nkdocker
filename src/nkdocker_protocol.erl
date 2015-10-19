@@ -24,12 +24,11 @@
 -behaviour(nkpacket_protocol).
 
 -export([transports/1]).
--export([conn_init/1, conn_parse/2, conn_encode/2]).
+-export([conn_init/1, conn_parse/3, conn_encode/3]).
 
 -include_lib("nklib/include/nklib.hrl").
 
 -record(state, {
-	nkport :: nkpacket:nkport(),
 	notify :: pid(),
 	buff = <<>> :: binary(),
 	streams = [] :: [reference()], 
@@ -57,29 +56,29 @@ transports(_) -> [tls].
 conn_init(NkPort) ->
 	{ok, {notify, Pid}} = nkpacket:get_user(NkPort),
 	% lager:notice("Protocol CONN init: ~p (~p)", [NkPort, self()]),
-	{ok, #state{nkport=NkPort, notify=Pid}}.
+	{ok, #state{notify=Pid}}.
 
 
 %% @private
--spec conn_parse(term()|close, #state{}) ->
+-spec conn_parse(term()|close, nkpacket:nkport(), #state{}) ->
 	{ok, #state{}} | {stop, normal, #state{}}.
 
-conn_parse(close, State) ->
+conn_parse(close, _NkPort, State) ->
 	{ok, State};
 
-conn_parse(Data, State) ->
+conn_parse(Data, _NkPort, State) ->
 	handle(Data, State).
 
 
 %% @private
--spec conn_encode(term(), #state{}) ->
+-spec conn_encode(term(), nkpacket:nkport(), #state{}) ->
 	{ok, nkpacket:raw_msg(), #state{}} | {error, term(), #state{}} |
 	{stop, Reason::term()}.
 
-conn_encode({http, Ref, Method, Path, Headers, Body}, State) ->
+conn_encode({http, Ref, Method, Path, Headers, Body}, _NkPort, State) ->
 	request(Ref, Method, Path, Headers, Body, State);
 	
-conn_encode({data, Ref, Data}, State) ->
+conn_encode({data, Ref, Data}, _NkPort, State) ->
 	data(Ref, Data, State).
 
 
