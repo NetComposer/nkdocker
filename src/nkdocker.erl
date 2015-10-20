@@ -376,6 +376,7 @@ logs(Pid, Container) ->
 		follow => boolean(),
 		stdout => boolean(),
 		stderr => boolean(),
+		since => integer(),
 		timestamps => boolean(),
 		tail => text()
 	}) ->
@@ -383,7 +384,7 @@ logs(Pid, Container) ->
 
 logs(Pid, Container, Opts) ->
 	Path1 = list_to_binary([<<"/containers/">>, Container, <<"/logs">>]),
-	UrlOpts = [follow, timestamps, stdout, stderr, tail],
+	UrlOpts = [follow, timestamps, stdout, stderr, tail, since],
 	Path2 = make_path(Path1, Opts, UrlOpts),
 	case Opts of 
 		#{follow:=true} ->
