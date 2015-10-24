@@ -169,7 +169,7 @@ init([Opts]) ->
             Conn = {nkdocker_protocol, Proto, Ip, Port},
             ConnOpts1 = maps:with([tls_opts], Opts1),
             ConnOpts2 = ConnOpts1#{
-                group => {nkdocker, shared},
+                srv_id => {nkdocker, shared},
                 monitor => self(), 
                 user => {notify, self()}, 
                 idle_timeout => ?CMD_TIMEOUT
@@ -436,7 +436,7 @@ send(Method, Path, Body, Opts, From, State) ->
         _ -> 
             {
                 ConnOpts#{
-                    group => {nkdocker, non_shared}, 
+                    srv_id => {nkdocker, non_shared}, 
                     idle_timeout => maps:get(timeout, Opts, ?CMD_TIMEOUT),
                     force_new => true
                 },
