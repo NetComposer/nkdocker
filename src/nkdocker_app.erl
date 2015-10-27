@@ -77,7 +77,7 @@ get_config() ->
                         proto => tcp
                     };
                 tls ->
-                    BaseTLSOpts = nkpacket_config:tls_opts(),
+                    BaseTLSOpts = nkpacket_syntax:tls_opts(),
                     UserTLSOpts = nklib_util:to_map(get_env(tls_opts, #{})),
                     #{
                         host => get_env(host, "127.0.0.1"),
@@ -105,7 +105,7 @@ get_env_config() ->
         os:getenv("DOCKER_TLS_VERIFY") == "true"
     of
         true ->
-            BaseTLSOpts = nkpacket_config:tls_opts(),
+            BaseTLSOpts = nkpacket_syntax:tls_opts(),
             case os:getenv("DOCKER_CERT_PATH") of
                 false ->
                     #{
