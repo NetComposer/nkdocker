@@ -25,6 +25,7 @@
 -export_type([conn_opts/0, create_opts/0, async_msg/0]).
 
 -include_lib("nklib/include/nklib.hrl").
+-include_lib("nkpacket/include/nkpacket.hrl").
 -include("nkdocker.hrl").
 
 -export([start_link/0, start_link/1, start/0, start/1, stop/1, finish_async/2]).
@@ -55,13 +56,7 @@
 		host => text(),					% Default "127.0.0.1"
 		port => inet:port_number(),		% Default 2375
 		proto => tcp | tls,				% Default tcp
-        tls_certfile => string(),
-        tls_keyfile => string(),
-        tls_cacertfile => string(),
-        tls_password => string(),
-        tls_verify => boolean(),
-        tls_depth => 0..16,
-        tls_versions => [atom()]
+		?TLS_TYPES
 	}.
 
 -type docker_device() ::
