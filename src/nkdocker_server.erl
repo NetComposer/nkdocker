@@ -42,6 +42,8 @@
         chunks => boolean()             % Send data in chunks
     }.
 
+-define(CMD_TIMEOUT, 5000).
+
 
 %% ===================================================================
 %% Public
@@ -79,7 +81,8 @@ stop(Pid) ->
 
 cmd(Pid, Verb, Path, Body, Opts) ->
     % Path1 = <<"/v1.17", Path/binary>>,
-    case catch gen_server:call(Pid, {cmd, Verb, Path, Body, Opts}, infinity) of
+    Timeout = maps:get(timeout, Opts, ?CMD_TIMEOUT),
+    case catch gen_server:call(Pid, {cmd, Verb, Path, Body, Opts}, Timeout) of
         {'EXIT', _} -> {error, process_failed};
         Other -> Other
     end.
@@ -90,7 +93,7 @@ cmd(Pid, Verb, Path, Body, Opts) ->
     ok | {error, term()}.
 
 data(Pid, Ref, Data) ->
-    case catch gen_server:call(Pid, {data, Ref, Data}, infinity) of
+    case catch gen_server:call(Pid, {data, Ref, Data}, ?CMD_TIMEOUT) of
         {'EXIT', _} -> {error, process_failed};
         Other -> Other
     end.
@@ -167,19 +170,20 @@ init([Opts]) ->
     case nkpacket_dns:ips(Host) of
         [Ip] ->
             Conn = {nkdocker_protocol, Proto, Ip, Port},
-            ConnOpts1 = maps:with([tls_opts], Opts1),
-            ConnOpts2 = ConnOpts1#{
-                srv_id => {nkdocker, shared},
+            TLSKeys = nkpacket_util:tls_keys(),
+            TLSOpts = maps:with(TLSKeys, Opts1),
+            ConnOpts = TLSOpts#{
+                srv_id => {nkdocker, self()},
                 monitor => self(), 
                 user => {notify, self()}, 
                 idle_timeout => ?CMD_TIMEOUT
             },
-            lager:debug("Connecting to ~p, (~p)", [Conn, ConnOpts2]),
-            case nkpacket:connect(Conn, ConnOpts2) of
+            lager:debug("Connecting to ~p, (~p)", [Conn, ConnOpts]),
+            case nkpacket:connect(Conn, ConnOpts) of
                 {ok, _Pid} ->
                     State = #state{
                         conn = Conn,
-                        conn_opts = ConnOpts2,
+                        conn_opts = ConnOpts,
                         cmds = []
                     },
                     case get_version(State) of
@@ -436,7 +440,7 @@ send(Method, Path, Body, Opts, From, State) ->
         _ -> 
             {
                 ConnOpts#{
-                    srv_id => {nkdocker, non_shared}, 
+                    srv_id => {nkdocker, self(), exclusive},
                     idle_timeout => maps:get(timeout, Opts, ?CMD_TIMEOUT),
                     force_new => true
                 },

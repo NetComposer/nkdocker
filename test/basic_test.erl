@@ -39,89 +39,89 @@ basic_test_() ->
     			% keyfile = ""
     			% certfile =""
     		},
-    		{ok, C} = nkdocker:start_link(Opts),
+    		{ok, Pid} = nkdocker:start_link(Opts),
     		?debugMsg("Starting BASIC test"),
-    		C
+    		Pid
 		end,
-		fun(C) -> 
-			nkdocker:stop(C)
+		fun(Pid) -> 
+			nkdocker:stop(Pid)
 		end,
-	    fun(C) ->
+	    fun(Pid) ->
 		    [
-				fun() -> conns(C) end,
-                {timeout, 60, fun() -> images(C) end},
-                {timeout, 60, fun() -> run(C) end}
+				fun() -> conns(Pid) end,
+                {timeout, 60, fun() -> images(Pid) end},
+                {timeout, 60, fun() -> run(Pid) end}
 			]
 		end
   	}.
 
 
-conns(C) ->
-    %% Stop all connections, if active
-    nkpacket_connection:stop_all({nkdocker, shared}),
-    nkpacket_connection:stop_all({nkdocker, non_shared}),
+conns(Pid) ->
+    nkpacket_connection:stop_all({nkdocker, Pid}),
+    nkpacket_connection:stop_all({nkdocker, Pid, exclusive}),
     timer:sleep(100),
-    [] = nkpacket_connection:get_all({nkdocker, shared}),
-    [] = nkpacket_connection:get_all({nkdocker, non_shared}),
+    [] = nkpacket_connection:get_all({nkdocker, Pid}),
+    [] = nkpacket_connection:get_all({nkdocker, Pid, exclusive}),
    
-	{async, Ref} = nkdocker:events(C),
+	{async, Ref} = nkdocker:events(Pid),
     timer:sleep(50),
-    % We have only the events exclusive connection
-    [] = nkpacket_connection:get_all({nkdocker, shared}),
-    [Pid1] = nkpacket_connection:get_all({nkdocker, non_shared}),
-    ConnRef = erlang:monitor(process, Pid1),
 
-    {ok, #{<<"ApiVersion">>:=_}} = nkdocker:version(C),
-    {ok, #{<<"Containers">>:=_}} = nkdocker:info(C),
-    ok = nkdocker:ping(C),
+    % We have only the events exclusive connection
+    [] = nkpacket_connection:get_all({nkdocker, Pid}),
+    [ConnPid1] = nkpacket_connection:get_all({nkdocker, Pid, exclusive}),
+    ConnRef = erlang:monitor(process, ConnPid1),
+
+    {ok, #{<<"ApiVersion">>:=_}} = nkdocker:version(Pid),
+    {ok, #{<<"Containers">>:=_}} = nkdocker:info(Pid),
+    ok = nkdocker:ping(Pid),
     % Now we have the previous and a 'shared' connection
-    [Pid2] = nkpacket_connection:get_all({nkdocker, shared}),
-    [Pid1] = nkpacket_connection:get_all({nkdocker, non_shared}),
-    ok = nkdocker:finish_async(C, Ref),
+    [ConnPid2] = nkpacket_connection:get_all({nkdocker, Pid}),
+    [ConnPid1] = nkpacket_connection:get_all({nkdocker, Pid, exclusive}),
+    ok = nkdocker:finish_async(Pid, Ref),
     ?RECV({nkdocker, Ref, {ok, user_stop}}),
-    ?RECV({'DOWN', ConnRef, process, Pid1, normal}),
-    [Pid2] = nkpacket_connection:get_all({nkdocker, shared}),
-    [] = nkpacket_connection:get_all({nkdocker, non_shared}),
-    true = Pid1 /= Pid2,
+    ?RECV({'DOWN', ConnRef, process, ConnPid1, normal}),
+    [ConnPid2] = nkpacket_connection:get_all({nkdocker, Pid}),
+    [] = nkpacket_connection:get_all({nkdocker, Pid, exclusive}),
+    true = ConnPid1 /= ConnPid2,
     ok.
 
 
-images(C) ->
+images(Pid) ->
     ?debugMsg("Building image from image1.tar (imports busybox:latest)"),
     Dir = filename:join(filename:dirname(code:priv_dir(nkdocker)), "test"),
     {ok, ImageTar1} = file:read_file(filename:join(Dir, "image1.tar")),
-    {ok, List1} = nkdocker:build(C, ImageTar1, #{t=>"nkdocker:test1", force_rm=>true}),
+    {ok, List1} = nkdocker:build(Pid, ImageTar1, #{t=>"nkdocker:test1", force_rm=>true}),
     [#{<<"stream">>:=<<"Successfully built ", Id1:12/binary, "\n">>}|_] = 
         lists:reverse(List1),
-    {ok, #{<<"Id">>:=FullId1}=Img1} = nkdocker:inspect_image(C, Id1),
+    {ok, #{<<"Id">>:=FullId1}=Img1} = nkdocker:inspect_image(Pid, Id1),
+    <<Id1:12/binary, _/binary>> = FullId1,
     % lager:warning("Id: ~p, FullId1: ~p", [Id1, FullId1]),
 
-    {ok, Img1} = nkdocker:inspect_image(C, "nkdocker:test1"),
-    <<Id1:12/binary, _/binary>> = FullId1,
-    {ok, [#{<<"Id">>:=FullId1}|_]} = nkdocker:history(C, Id1),
-    case nkdocker:tag(C, Id1, #{repo=>"nkdocker", tag=>"test2"}) of
+    {ok, Img1} = nkdocker:inspect_image(Pid, "nkdocker:test1"),
+    {ok, [#{<<"Id">>:=FullId1}|_]} = nkdocker:history(Pid, Id1),
+    case nkdocker:tag(Pid, Id1, #{repo=>"nkdocker", tag=>"test2", force=>true}) of
         ok -> ok;
         {error, {conflict, _}} -> ok
     end,
-    {ok, #{<<"Id">>:=FullId1}} = nkdocker:inspect_image(C, "nkdocker:test2"),
-    {ok, _} = nkdocker:rmi(C, <<"nkdocker:test1">>),
-    {error, {not_found, _}} = nkdocker:inspect_image(C, "nkdocker:test1"),
+    {ok, #{<<"Id">>:=FullId1}} = nkdocker:inspect_image(Pid, "nkdocker:test2"),
+    {ok, _} = nkdocker:rmi(Pid, <<"nkdocker:test1">>),
+    {error, {not_found, _}} = nkdocker:inspect_image(Pid, "nkdocker:test1"),
 
     ?debugMsg("Building image from busybox:latest"),
-    {ok, _} = nkdocker:create_image(C, #{fromImage=>"busybox:latest"}),
-    {ok, #{<<"Id">>:=FullId1}} = nkdocker:inspect_image(C, "busybox:latest"),
+    {ok, _} = nkdocker:create_image(Pid, #{fromImage=>"busybox:latest"}),
+    {ok, #{<<"Id">>:=FullId1}} = nkdocker:inspect_image(Pid, "busybox:latest"),
     ok.
 
 
-run(C) ->
+run(Pid) ->
     ?debugMsg("Starting run test"),
-    nkdocker:kill(C, "nkdocker1"),
-    nkdocker:rm(C, "nkdocker1"),
+    nkdocker:kill(Pid, "nkdocker1"),
+    nkdocker:rm(Pid, "nkdocker1"),
 
-    {async, Ref} = nkdocker:events(C),
+    {async, Ref} = nkdocker:events(Pid),
 
     ?debugMsg("Start container from busybox:latest"),
-    {ok, #{<<"Id">>:=Id1}} = nkdocker:create(C, "busybox:latest", 
+    {ok, #{<<"Id">>:=Id1}} = nkdocker:create(Pid, "busybox:latest", 
         #{
             name => "nkdocker1",
             interactive => true,
@@ -131,62 +131,58 @@ run(C) ->
     ?debugMsg("... created"),
     receive_status(Ref, Id1, <<"create">>),
 
-    {ok, #{<<"Id">>:=Id1}=Data1} = nkdocker:inspect(C, Id1),
-    {ok, Data1} = nkdocker:inspect(C, "nkdocker1"),
+    {ok, #{<<"Id">>:=Id1}=Data1} = nkdocker:inspect(Pid, Id1),
+    {ok, Data1} = nkdocker:inspect(Pid, "nkdocker1"),
 
-    ok = nkdocker:start(C, Id1),
+    ok = nkdocker:start(Pid, Id1),
     receive_status(Ref, Id1, <<"start">>),
 
-    ok = nkdocker:pause(C, "nkdocker1"),
+    ok = nkdocker:pause(Pid, "nkdocker1"),
     receive_status(Ref, Id1, <<"pause">>),
 
-    ok = nkdocker:unpause(C, "nkdocker1"),
+    ok = nkdocker:unpause(Pid, "nkdocker1"),
     receive_status(Ref, Id1, <<"unpause">>),
 
     Self = self(),
     spawn(
         fun() -> 
-            {ok, R} = nkdocker:wait(C, "nkdocker1", 5000),
+            {ok, R} = nkdocker:wait(Pid, "nkdocker1", 5000),
             Self ! {wait, Ref, R}
         end),
 
-    ok = nkdocker:kill(C, "nkdocker1"),
+    ok = nkdocker:kill(Pid, "nkdocker1"),
     receive_status(Ref, Id1, <<"die">>),
     receive_status(Ref, Id1, <<"kill">>),
     ?RECV({wait, Ref, #{<<"StatusCode">> := 137}}),
 
-    ok = nkdocker:start(C, Id1),
+    ok = nkdocker:start(Pid, Id1),
     receive_status(Ref, Id1, <<"start">>),
 
-    {async, Ref2} = nkdocker:attach(C, Id1),
-    ok = nkdocker:attach_send(C, Ref2, "cat /etc/hostname\r\n"),
+    {async, Ref2} = nkdocker:attach(Pid, Id1),
+    ok = nkdocker:attach_send(Pid, Ref2, "cat /etc/hostname\r\n"),
     Msg1 = receive_msg(Ref2, <<>>),
     <<ShortId1:12/binary, _/binary>> = Id1,
     <<"cat /etc/hostname\r\n", ShortId1:12/binary, _/binary>> = Msg1,
 
-    {ok, [
-        <<"/ # \n">>, 
-        <<"/ # cat /etc/hostname\n">>, 
-        <<ShortId1:12/binary, "\n">>,
-        <<"/ # \n">>
-    ]} = 
-        nkdocker:logs(C, ShortId1, #{stdout=>true}),
+    {ok, TList} = nkdocker:logs(Pid, ShortId1, #{stdout=>true}),
+    {match, _} = re:run(TList, "cat /etc/hostname"),
+    {match, _} = re:run(TList, ShortId1),
 
-    ok = nkdocker:rename(C, ShortId1, "nkdocker2"),
-    ok = nkdocker:restart(C, "nkdocker2"),
+    ok = nkdocker:rename(Pid, ShortId1, "nkdocker2"),
+    ok = nkdocker:restart(Pid, "nkdocker2"),
     ?RECV({nkdocker, Ref2, {error, connection_failed}}),
 
     receive_status(Ref, Id1, <<"die">>),
     receive_status(Ref, Id1, <<"start">>),
     receive_status(Ref, Id1, <<"restart">>),
 
-    ok = nkdocker:kill(C, "nkdocker2"),
+    ok = nkdocker:kill(Pid, "nkdocker2"),
     receive_status(Ref, Id1, <<"kill">>),
     receive_status(Ref, Id1, <<"die">>),
-    ok = nkdocker:rm(C, "nkdocker2"),
+    ok = nkdocker:rm(Pid, "nkdocker2"),
     receive_status(Ref, Id1, <<"destroy">>),
 
-    nkdocker:finish_async(C, Ref),
+    nkdocker:finish_async(Pid, Ref),
     ?RECV({nkdocker, Ref, {ok, user_stop}}),
     ok.
 

@@ -77,13 +77,10 @@ get_config() ->
                         proto => tcp
                     };
                 tls ->
-                    BaseTLSOpts = nkpacket_syntax:tls_opts(),
-                    UserTLSOpts = nklib_util:to_map(get_env(tls_opts, #{})),
                     #{
                         host => get_env(host, "127.0.0.1"),
                         port => get_env(port, 2376),
-                        proto => tls,
-                        tls_opts => maps:merge(BaseTLSOpts, UserTLSOpts)
+                        proto => tls
                     }
             end;
         _ ->
@@ -105,24 +102,20 @@ get_env_config() ->
         os:getenv("DOCKER_TLS_VERIFY") == "true"
     of
         true ->
-            BaseTLSOpts = nkpacket_syntax:tls_opts(),
             case os:getenv("DOCKER_CERT_PATH") of
                 false ->
                     #{
                         host => Domain,
                         port => Port,
-                        proto => tls, 
-                        tls_opts => BaseTLSOpts
+                        proto => tls
                     };
                 Path ->
                     #{
                         host => Domain,
                         port => Port,
                         proto => tls, 
-                        tls_opts => BaseTLSOpts#{
-                            certfile => filename:join(Path, "cert.pem"),
-                            keyfile => filename:join(Path, "key.pem")
-                        }
+                        tls_certfile => filename:join(Path, "cert.pem"),
+                        tls_keyfile => filename:join(Path, "key.pem")
                     }
             end;
         false ->

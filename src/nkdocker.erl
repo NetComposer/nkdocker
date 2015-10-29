@@ -55,7 +55,13 @@
 		host => text(),					% Default "127.0.0.1"
 		port => inet:port_number(),		% Default 2375
 		proto => tcp | tls,				% Default tcp
-		ssl_opts => nkpacket:ssl_opts()
+        tls_certfile => string(),
+        tls_keyfile => string(),
+        tls_cacertfile => string(),
+        tls_password => string(),
+        tls_verify => boolean(),
+        tls_depth => 0..16,
+        tls_versions => [atom()]
 	}.
 
 -type docker_device() ::
@@ -1127,11 +1133,9 @@ add_authconfig(_, Res) ->
 
 
 %% @private
-add_timeout(#{timeout:=Timeout}, Map) ->
-	Map#{timeout=>Timeout};
-
-add_timeout(_Opts, Map) ->
-	Map.
+add_timeout(Opts, Map) ->
+	Timeout = maps:get(timeout, Opts, 180000),
+	Map#{timeout=>Timeout}.
 
 
 
