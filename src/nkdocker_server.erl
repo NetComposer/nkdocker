@@ -398,7 +398,8 @@ get_version(#state{conn=Conn, conn_opts=ConnOpts}) ->
                 receive 
                     {nkdocker, Ref, {head, 200, _}} ->
                         receive
-                            {nkdocker, Ref, {body, Data}} -> nklib_json:decode(Data)
+                            {nkdocker, Ref, {body, Data}} -> 
+                                nklib_json:decode(Data)
                         after
                             5000 -> timeout
                         end
@@ -411,7 +412,7 @@ get_version(#state{conn=Conn, conn_opts=ConnOpts}) ->
                 timeout ->
                     {error, connect_timeout};
                 Other ->
-                    {error, {invalid_return, Other}}
+                    {error, {invalid_return_from_get_version, Other}}
             end;
         {error, Error} ->
             {error, Error}
