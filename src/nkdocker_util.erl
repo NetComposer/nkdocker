@@ -64,9 +64,10 @@ build(Pid, Tag, TarBin) ->
     		ok;
 		{error, {not_found, _}} ->
 			lager:notice("Building docker image ~s", [Tag]),
-    		case nkdocker:build(Pid, TarBin, #{t=>Tag, async=>true}) of
+			Timeout = 3600 * 1000,
+    		case nkdocker:build(Pid, TarBin, #{t=>Tag, async=>true, timeout=>Timeout}) of
     			{async, Ref} ->
-    				case wait_async(Pid, Ref) of
+    				case wait_async(Pid, Ref, Timeout) of
     					ok ->
     						case nkdocker:inspect_image(Pid, Tag) of
     							{ok, _} -> ok;
@@ -123,34 +124,34 @@ remove_exited(Pid, [Id|Rest]) ->
 
 
 %% @private
-wait_async(Pid, Ref) ->
+wait_async(Pid, Ref, Timeout) ->
 	Mon = monitor(process, Pid),
-	Result = wait_async_iter(Ref, Mon),
+	Result = wait_async_iter(Ref, Mon, Timeout),
 	demonitor(Mon),
 	Result.
 
 
-wait_async_iter(Ref, Mon) ->
+wait_async_iter(Ref, Mon, Timeout) ->
 	receive
 		{nkdocker, Ref, {data, #{<<"stream">> := Text}}} ->
 			io:format("~s", [Text]),
-			wait_async_iter(Ref, Mon);
+			wait_async_iter(Ref, Mon, Timeout);
 		{nkdocker, Ref, {data, #{<<"status">> := Text}}} ->
 			io:format("~s", [Text]),
-			wait_async_iter(Ref, Mon);
+			wait_async_iter(Ref, Mon, Timeout);
 		{nkdocker, Ref, {data, Data}} ->
 			io:format("~p\n", [Data]),
-			wait_async_iter(Ref, Mon);
+			wait_async_iter(Ref, Mon, Timeout);
 		{nkdocker, Ref, {ok, _}} ->
 			ok;
 		{nkdocker, Ref, {error, Reason}} ->
 			{error, Reason};
 		{nkdocker, Ref, Other} ->
 			lager:warning("Unexpected msg: ~p", [Other]),
-			wait_async_iter(Ref, Mon);
+			wait_async_iter(Ref, Mon, Timeout);
 		{'DOWN', Mon, process, _Pid, _Reason} ->
 			{error, process_failed}
 	after 
-		180000 ->
+		Timeout ->
 			{error, timeout}
 	end.

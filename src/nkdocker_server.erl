@@ -42,7 +42,8 @@
         chunks => boolean()             % Send data in chunks
     }.
 
--define(CMD_TIMEOUT, 5000).
+
+-define(IDLE_TIMEOUT, 5000).
 
 
 %% ===================================================================
@@ -81,9 +82,8 @@ stop(Pid) ->
 
 cmd(Pid, Verb, Path, Body, Opts) ->
     % Path1 = <<"/v1.17", Path/binary>>,
-    Timeout = maps:get(timeout, Opts, ?CMD_TIMEOUT),
-    case catch gen_server:call(Pid, {cmd, Verb, Path, Body, Opts}, Timeout) of
-        {'EXIT', _} -> {error, process_failed};
+    case nklib_util:call(Pid, {cmd, Verb, Path, Body, Opts}, Opts) of
+        {error, {exit, {{timeout, _}, _}}} -> {error, call_timeout};
         Other -> Other
     end.
 
@@ -93,10 +93,7 @@ cmd(Pid, Verb, Path, Body, Opts) ->
     ok | {error, term()}.
 
 data(Pid, Ref, Data) ->
-    case catch gen_server:call(Pid, {data, Ref, Data}, ?CMD_TIMEOUT) of
-        {'EXIT', _} -> {error, process_failed};
-        Other -> Other
-    end.
+    nklib_util:call(Pid, {data, Ref, Data}, #{}).
 
 
 %% @doc Finished an asynchronous command
@@ -104,10 +101,7 @@ data(Pid, Ref, Data) ->
     ok | {error, term()}.
 
 finish(Pid, Ref) ->
-    case catch gen_server:call(Pid, {finish_async, Ref}, infinity) of
-        {'EXIT', _} -> {error, process_failed};
-        Other -> Other
-    end.
+    nklib_util:call(Pid, {finish_async, Ref}, #{}).
 
 
 %% @doc Generates creation options
@@ -115,9 +109,9 @@ finish(Pid, Ref) ->
     {ok, map()} | {error, term()}.
 
 create_spec(Pid, Opts) ->
-    case catch gen_server:call(Pid, get_vsn, infinity) of
+    case nklib_util:call(Pid, get_vsn, #{}) of
         {ok, Vsn} -> nkdocker_opts:create_spec(Vsn, Opts);
-        {'EXIT', _} -> {error, process_failed}
+        {error, Error} -> {error, Error}
     end.
 
 
@@ -176,7 +170,7 @@ init([Opts]) ->
                 srv_id => {nkdocker, self()},
                 monitor => self(), 
                 user => {notify, self()}, 
-                idle_timeout => ?CMD_TIMEOUT
+                idle_timeout => ?IDLE_TIMEOUT
             },
             lager:debug("Connecting to ~p, (~p)", [Conn, ConnOpts]),
             case nkpacket:connect(Conn, ConnOpts) of
@@ -442,7 +436,7 @@ send(Method, Path, Body, Opts, From, State) ->
             {
                 ConnOpts#{
                     srv_id => {nkdocker, self(), exclusive},
-                    idle_timeout => maps:get(timeout, Opts, ?CMD_TIMEOUT),
+                    idle_timeout => maps:get(timeout, Opts, ?IDLE_TIMEOUT),
                     force_new => true
                 },
                 []
