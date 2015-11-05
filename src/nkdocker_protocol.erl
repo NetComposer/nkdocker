@@ -54,7 +54,7 @@ transports(_) -> [tls].
 	{ok, #state{}}.
 
 conn_init(NkPort) ->
-	{ok, {notify, Pid}} = nkpacket:get_user(NkPort),
+	{ok, _SrvId, {notify, Pid}} = nkpacket:get_user(NkPort),
 	% lager:notice("Protocol CONN init: ~p (~p)", [NkPort, self()]),
 	{ok, #state{notify=Pid}}.
 
