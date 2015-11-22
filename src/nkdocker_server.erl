@@ -158,7 +158,7 @@ refresh_fun(NkPort) ->
 
 init([Opts]) ->
     process_flag(trap_exit, true),      %% Allow calls to terminate/2
-    {ok, EnvConfig} = application:get_env(nkdocker, conn_config),
+    EnvConfig = nkdocker_util:get_def_config(),
     Opts1 = maps:merge(EnvConfig, Opts),
     #{host:=Host, port:=Port, proto:=Proto} = Opts1,
     case nkpacket_dns:ips(Host) of

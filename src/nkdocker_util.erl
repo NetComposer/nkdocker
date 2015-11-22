@@ -22,12 +22,24 @@
 -module(nkdocker_util).
 -author('Carlos Gonzalez <carlosj.gf@gmail.com>').
 
+-export([get_def_config/0]).
 -export([remove_exited/0, remove_exited/1, build/3]).
 -export([make_tar/1]).
 
 %% ===================================================================
 %% Public
 %% ===================================================================
+
+
+%% @doc Gets default config
+-spec get_def_config() ->
+	nkdocker:conn_opts().
+
+get_def_config() ->
+    {ok, EnvConfig} = application:get_env(nkdocker, conn_config),
+    EnvConfig.
+
+
 
 %% @doc Removes all exited containers
 -spec remove_exited() ->
