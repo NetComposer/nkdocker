@@ -167,7 +167,7 @@ init([Opts]) ->
             TLSKeys = nkpacket_util:tls_keys(),
             TLSOpts = maps:with(TLSKeys, Opts1),
             ConnOpts = TLSOpts#{
-                srv_id => {nkdocker, self()},
+                class => {nkdocker, self()},
                 monitor => self(), 
                 user => {notify, self()}, 
                 idle_timeout => ?IDLE_TIMEOUT
@@ -435,7 +435,7 @@ send(Method, Path, Body, Opts, From, State) ->
         _ -> 
             {
                 ConnOpts#{
-                    srv_id => {nkdocker, self(), exclusive},
+                    class => {nkdocker, self(), exclusive},
                     idle_timeout => maps:get(timeout, Opts, ?IDLE_TIMEOUT),
                     force_new => true
                 },
