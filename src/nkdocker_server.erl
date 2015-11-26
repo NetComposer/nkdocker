@@ -82,7 +82,8 @@ stop(Pid) ->
 
 cmd(Pid, Verb, Path, Body, Opts) ->
     % Path1 = <<"/v1.17", Path/binary>>,
-    case nklib_util:call(Pid, {cmd, Verb, Path, Body, Opts}, Opts) of
+    Timeout = maps:get(timeout, Opts, 5000),
+    case nklib_util:call(Pid, {cmd, Verb, Path, Body, Opts}, Timeout) of
         {error, {exit, {{timeout, _}, _}}} -> {error, call_timeout};
         Other -> Other
     end.
@@ -93,7 +94,7 @@ cmd(Pid, Verb, Path, Body, Opts) ->
     ok | {error, term()}.
 
 data(Pid, Ref, Data) ->
-    nklib_util:call(Pid, {data, Ref, Data}, #{}).
+    nklib_util:call(Pid, {data, Ref, Data}).
 
 
 %% @doc Finished an asynchronous command
@@ -101,7 +102,7 @@ data(Pid, Ref, Data) ->
     ok | {error, term()}.
 
 finish(Pid, Ref) ->
-    nklib_util:call(Pid, {finish_async, Ref}, #{}).
+    nklib_util:call(Pid, {finish_async, Ref}).
 
 
 %% @doc Generates creation options
@@ -109,7 +110,7 @@ finish(Pid, Ref) ->
     {ok, map()} | {error, term()}.
 
 create_spec(Pid, Opts) ->
-    case nklib_util:call(Pid, get_vsn, #{}) of
+    case nklib_util:call(Pid, get_vsn) of
         {ok, Vsn} -> nkdocker_opts:create_spec(Vsn, Opts);
         {error, Error} -> {error, Error}
     end.
@@ -121,6 +122,21 @@ refresh_fun(NkPort) ->
     case nkpacket_connection_lib:raw_send(NkPort, <<"\r\n">>) of
         ok -> true;
         _ -> false
+    end.
+
+
+%% @private
+-spec get_conn(nkdocker:conn_opts()) ->
+    {ok, {inet:ip_address(), nkdocker:conn_opts()}} | {error, invalid_host}.
+
+get_conn(Opts) ->
+    EnvConfig = nkdocker_util:get_def_config(),
+    #{host:=Host}= Opts1 = maps:merge(EnvConfig, Opts),
+    case nkpacket_dns:ips(Host) of
+        [Ip] ->
+            {ok, {Ip, Opts1}};
+        _ ->
+            {error, invalid_host}
     end.
 
 
