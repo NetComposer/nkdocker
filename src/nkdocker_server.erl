@@ -26,7 +26,7 @@
 -export([start_link/1, start/1, stop/1, cmd/5, data/3, finish/2, create_spec/2]).
 -export([init/1, terminate/2, code_change/3, handle_call/3, handle_cast/2, 
          handle_info/2]).
--export([refresh_fun/1]).
+-export([refresh_fun/1, get_conn/1]).
 -export_type([cmd_opts/0]).
 
 -include("nkdocker.hrl").
@@ -174,11 +174,9 @@ get_conn(Opts) ->
 
 init([Opts]) ->
     process_flag(trap_exit, true),      %% Allow calls to terminate/2
-    EnvConfig = nkdocker_util:get_def_config(),
-    Opts1 = maps:merge(EnvConfig, Opts),
-    #{host:=Host, port:=Port, proto:=Proto} = Opts1,
-    case nkpacket_dns:ips(Host) of
-        [Ip] ->
+    case get_conn(Opts) of
+        {ok, {Ip, Opts1}} ->
+            #{port:=Port, proto:=Proto} = Opts1,
             Conn = {nkdocker_protocol, Proto, Ip, Port},
             TLSKeys = nkpacket_util:tls_keys(),
             TLSOpts = maps:with(TLSKeys, Opts1),
@@ -188,7 +186,7 @@ init([Opts]) ->
                 user => {notify, self()}, 
                 idle_timeout => ?IDLE_TIMEOUT
             },
-            lager:debug("Connecting to ~p, (~p)", [Conn, ConnOpts]),
+            lager:notice("Connecting to ~p, (~p)", [Conn, ConnOpts]),
             case nkpacket:connect(Conn, ConnOpts) of
                 {ok, _Pid} ->
                     State = #state{
@@ -207,8 +205,8 @@ init([Opts]) ->
                 {error, Error} ->
                     {stop, {connection_error, Error}}
             end;
-        _ ->
-            {stop, invalid_host}
+        {error, Error} ->
+            {stop, Error}
     end.
 
 
