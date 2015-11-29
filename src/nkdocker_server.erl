@@ -186,7 +186,7 @@ init([Opts]) ->
                 user => {notify, self()}, 
                 idle_timeout => ?IDLE_TIMEOUT
             },
-            lager:notice("Connecting to ~p, (~p)", [Conn, ConnOpts]),
+            lager:debug("NkDOCKER connecting to ~p, (~p)", [Conn, ConnOpts]),
             case nkpacket:connect(Conn, ConnOpts) of
                 {ok, _Pid} ->
                     State = #state{
