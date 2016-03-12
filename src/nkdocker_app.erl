@@ -23,6 +23,7 @@
 -author('Carlos Gonzalez <carlosj.gf@gmail.com>').
 -behaviour(application).
 
+-export([get/1, get/2, put/2]).
 -export([start/0, start/2, stop/1]).
 -export([get_env/2]).
 
@@ -131,4 +132,14 @@ get_env_config() ->
 get_env(Key, Default) ->
     application:get_env(?APP, Key, Default).
 
+
+%% Configuration access
+get(Key) ->
+    nklib_config:get(?APP, Key).
+
+get(Key, Default) ->
+    nklib_config:get(?APP, Key, Default).
+
+put(Key, Val) ->
+    nklib_config:put(?APP, Key, Val).
 
