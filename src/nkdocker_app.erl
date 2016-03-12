@@ -53,9 +53,9 @@ start(_Type, _Args) ->
     _ = code:ensure_loaded(nkdocker_protocol),
     {ok, Pid} = nkdocker_sup:start_link(),
     {ok, Vsn} = application:get_key(nkdocker, vsn),
-    lager:notice("NkDOCKER v~s has started.", [Vsn]),
+    lager:info("NkDOCKER v~s has started.", [Vsn]),
     ConnOpts = get_config(),
-    lager:notice("Default config: ~p", [ConnOpts]),
+    lager:info("Default config: ~p", [ConnOpts]),
     application:set_env(?APP, conn_config, ConnOpts),
     {ok, Pid}.
 
