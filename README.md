@@ -95,3 +95,15 @@ Shell got {nkdocker,#Ref<0.0.3.103165>,
 ```
 
 See [nkdocker.erl](nkdocker.erl) to find all available commands.
+
+
+## Docker Monitor
+
+Its is possible to start a long-running docker client calling nkdocker_monitor:register/1,2.
+The server will be started with the first registration, and removed after the last one is unregistered.
+
+All events from docker will be sent to the callback module, as well as stats and other specific information.
+
+
+
+

@@ -23,25 +23,23 @@
 -author('Carlos Gonzalez <carlosj.gf@gmail.com>').
 -behaviour(supervisor).
 
--export([start_events/2, init/1, start_link/0]).
+-export([start_monitor/3, init/1, start_link/0]).
 
-% -include("nkmedia.hrl").
-
-start_events(Id, Opts) ->
+start_monitor(Id, CallBack, Opts) ->
 	Spec = {
-        {events, Id},
-        {nkdocker_events, start_link, [Id, Opts]},
-        permanent,
+        {monitor, Id},
+        {nkdocker_monitor, start_link, [Id, CallBack, Opts]},
+        transient,
         5000,
         worker,
-        [nkdocker_events]
+        [nkdocker_monitor]
     },
 	case supervisor:start_child(?MODULE, Spec) of
         {ok, Pid} -> 
             {ok, Pid};
         {error, already_present} ->
-            ok = supervisor:delete_child(?MODULE, {events, Id}),
-            start_events(Id, Opts);
+            ok = supervisor:delete_child(?MODULE, {monitor, Id}),
+            start_monitor(Id, CallBack, Opts);
         {error, {already_started, Pid}} -> 
             {ok, Pid};
         {error, Error} -> 
