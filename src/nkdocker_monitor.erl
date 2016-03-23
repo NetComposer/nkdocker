@@ -23,36 +23,39 @@
 -behaviour(gen_server).
 
 -export([register/1, register/2, unregister/1, unregister/2, get_docker/1]).
--export([get_containers/1, get_container/2, get_all/0]).
+-export([get_all_data/1, get_data/2, start_stats/2, get_all/0]).
 -export([start_link/3]).
 -export([init/1, terminate/2, code_change/3, handle_call/3,
          handle_cast/2, handle_info/2]).
--export_type([id/0, notify/0]).
+-export_type([monitor_id/0, notify/0, data/0]).
 
 -define(LLOG(Type, Txt, Args), lager:Type("NkDOCKER Monitor "++Txt, Args)).
 
 -define(UPDATE_TIME, 10000).
 
--callback nkdocker_notify(id(), notify()) ->
+-callback nkdocker_notify(monitor_id(), notify()) ->
     ok.
 
 %% ===================================================================
 %% Types
 %% ===================================================================
 
--type id() :: {inet:ip_address(), inet:port()}.
+-type monitor_id() :: {inet:ip_address(), inet:port()}.
 
 -type notify() ::
     {docker, {Id::binary(), Status::atom(), From::binary(), Time::integer()}} |
     {stats, {Id::binary(), Data::binary()}}  |
-    {start, {Name::binary(), Id::binary(), Labels::map()}} |
-    {stop, {Name::binary(), Id::binary(), Labels::map()}}.
+    {start, {Name::binary(), Image::binary(), Data::data()}} |
+    {stop, {Name::binary(), Image::binary(), Data::data()}}.
 
 -type data() ::
     #{
         name => binary(),
+        id => binary(),
+        image => binary(),
+        env => map(),
         labels => map(),
-        data => map(),          % inspect resutl
+        inspect => map(),          % inspect result
         stats => map()
     }.
 
@@ -66,7 +69,7 @@
 
 %% @doc Equivalent to register(CallBack, #{})
 -spec register(module()) ->
-    {ok, id()} | {error, term()}.
+    {ok, monitor_id()} | {error, term()}.
 
 register(CallBack) ->
     nkdocker_monitor:register(CallBack, #{}).
@@ -76,18 +79,18 @@ register(CallBack) ->
 %% For each new event, Callback:nkdocker_notify(id(), event()) will be called
 %% The first caller for a specific ip and port daemon will start the server
 -spec register(module(), nkdocker:conn_opts()) ->
-    {ok, id()} | {error, term()}.
+    {ok, monitor_id()} | {error, term()}.
 
 register(CallBack, Opts) ->
-    case find(Opts) of
-        {ok, Id, none} ->
-            case nkdocker_sup:start_monitor(Id, CallBack, Opts) of
+    case find_monitor(Opts) of
+        {ok, MonId, none} ->
+            case nkdocker_sup:start_monitor(MonId, CallBack, Opts) of
                 {ok, _Pid} ->
-                    {ok, Id};
+                    {ok, MonId};
                 {error, Error} ->
                     {error, Error}
             end;
-        {ok, _Id, Pid} ->
+        {ok, _MonId, Pid} ->
             gen_server:call(Pid, {register, CallBack});
         {error, Error} ->
             {error, Error}
@@ -105,10 +108,10 @@ unregister(CallBack) ->
 %% @doc Unregisters a callback
 %% After the last callback is unregistered, the server stops
 unregister(Callback, Opts) ->
-    case find(Opts) of
-        {ok, _Id, none} ->
+    case find_monitor(Opts) of
+        {ok, _MonId, none} ->
             ok;
-        {ok, _Id, Pid} ->
+        {ok, _MonId, Pid} ->
             gen_server:cast(Pid, {unregister, Callback});
         {error, Error} ->
             {error, Error}
@@ -116,85 +119,68 @@ unregister(Callback, Opts) ->
 
 
 %% @doc Get the docker server pid
--spec get_docker(id()) ->
-    {ok, pid()} | error.
+-spec get_docker(monitor_id()) ->
+    {ok, pid()} | {error, term()}.
 
-get_docker(Id) ->
-    case nklib_proc:values({?MODULE, Id}) of
+get_docker(MonId) ->
+    case nklib_proc:values({?MODULE, MonId}) of
         [] ->
-            error;
+            {error, unknown_monitor};
         [{DockerPid, _Pid}] ->
             {ok, DockerPid}
     end.
 
 
-%% @doc Get the docker server pid
--spec get_containers(id()) ->
-    {ok, #{binary() => data()}} | error.
+%% @doc Gets all containers info
+-spec get_all_data(monitor_id()) ->
+    {ok, #{binary() => data()}} | {error, term()}.
 
-get_containers(Id) ->
-    case nklib_proc:values({?MODULE, Id}) of
-        [] ->
-            error;
-        [{_DockerPid, Pid}] ->
-            nklib_util:call(Pid, get_containers)
-    end.
+get_all_data(MonId) ->
+    do_call(MonId, get_all_data).
 
 
-%% @doc Get the docker server pid
--spec get_container(id(), binary()) ->
-    {ok, data()} | error.
+%% @doc Get specific container info
+-spec get_data(monitor_id(), binary()) ->
+    {ok, data()} | {error, term()}.
 
-get_container(Id, UUID) ->
-    case nklib_proc:values({?MODULE, Id}) of
-        [] ->
-            error;
-        [{_DockerPid, Pid}] ->
-            nklib_util:call(Pid, {get_container, nklib_util:to_binary(UUID)})
-    end.
+get_data(MonId, Id) ->
+    do_call(MonId, {get_data, nklib_util:to_binary(Id)}).
+
+
+%% @doc Start stats for a containers
+-spec start_stats(monitor_id(), binary()) ->
+    ok | {error, term()}.
+
+start_stats(MonId, Id) ->
+    do_call(MonId, {start_stats, nklib_util:to_binary(Id)}).
 
 
 %% @doc Gets all started monitors
 -spec get_all() ->
-    [{id(), pid()}].
+    [{monitor_id(), pid()}].
 
 get_all() ->
     nklib_proc:values(?MODULE).
-
-
-%% @private
-start_link(Id, CallBack, Opts) ->
-    gen_server:start_link(?MODULE, [Id, CallBack, Opts], []).
-
-
-%% @private
-find(Opts) ->
-    case nkdocker_server:get_conn(Opts) of
-        {ok, {Ip, #{port:=Port}}} ->
-            Id = {Ip, Port},
-            case nklib_proc:values({?MODULE, Id}) of
-                [] ->
-                    {ok, Id, none};
-                [{_, Pid}] ->
-                    {ok, Id, Pid}
-            end;
-        {error, Error} ->
-            {error, Error}
-    end.
 
 
 % ===================================================================
 %% gen_server behaviour
 %% ===================================================================
 
+%% @private
+start_link(MonId, CallBack, Opts) ->
+    gen_server:start_link(?MODULE, [MonId, CallBack, Opts], []).
+
+
 -record(state, {
-    id :: id(),
+    id :: monitor_id(),
     server :: pid(),
     event_ref :: reference(),
     regs = [] :: [module()],
     time = 0 :: integer(),
-    conts = #{} :: #{binary() => map()},
-    stats_refs = #{} :: #{reference() => binary()}
+    cont_datas = #{} :: #{Name::binary() => map()},
+    cont_ids = #{} :: #{Id::binary() => Name::binary()},
+    stats_refs = #{} :: #{reference() => Name::binary()}
 }).
 
 
@@ -203,12 +189,12 @@ find(Opts) ->
     {ok, tuple()} | {ok, tuple(), timeout()|hibernate} |
     {stop, term()} | ignore.
 
-init([Id, CallBack, Opts]) ->
+init([MonId, CallBack, Opts]) ->
     case nkdocker_server:start_link(Opts) of
         {ok, Pid} ->
             monitor(process, Pid),
-            true = nklib_proc:reg({?MODULE, Id}, Pid),
-            nklib_proc:put(?MODULE, Id),
+            true = nklib_proc:reg({?MODULE, MonId}, Pid),
+            nklib_proc:put(?MODULE, MonId),
             EvOpts = case nkdocker_app:get(event_last_time, 0) of
                 0 -> #{};
                 Time -> #{since=>Time-1}
@@ -221,9 +207,9 @@ init([Id, CallBack, Opts]) ->
                         _ -> ?LLOG(warning, "recovered callbacks: ~p", [Regs])
                     end,
                     Regs2 = nklib_util:store_value(CallBack, Regs),
-                    ?LLOG(info, "server start (~p)", [Id]),
+                    ?LLOG(info, "server start (~p)", [MonId]),
                     self() ! update_all,
-                    {ok, #state{id=Id, server=Pid, event_ref=Ref, regs=Regs2}};
+                    {ok, #state{id=MonId, server=Pid, event_ref=Ref, regs=Regs2}};
                 {error, Error} ->
                     {stop, Error}
             end;
@@ -242,15 +228,30 @@ handle_call({register, Module}, _From, #state{id=Id, regs=Regs}=State) ->
     nkdocker_app:put(monitor_callbacks, Regs2),
     {reply, {ok, Id}, State#state{regs=Regs2}};
 
-handle_call(get_containers, _From, #state{conts=Conts}=State) ->
-    {reply, {ok, Conts}, State};
+handle_call(get_all_data, _From, #state{cont_datas=Datas}=State) ->
+    {reply, {ok, Datas}, State};
 
-handle_call({get_container, Id}, _From, #state{conts=Conts}=State) ->
-    Reply = case maps:find(Id, Conts) of
-        {ok, Data} -> {ok, Data};
-        error -> {error, not_found}
+handle_call({get_data, Id}, _From, State) ->
+    Reply = case find_data(Id, State) of
+        {ok, _Name, Data} -> {ok, Data};
+        not_found -> {error, container_not_found}
     end,
     {reply, Reply, State};
+
+handle_call({start_stats, Id}, _From, State) ->
+    #state{server=Server, cont_datas=Datas, stats_refs=Refs} = State,
+    case find_data(Id, State) of
+        {ok, _Name, #{stats_ref:=_}} -> 
+            {reply, ok, State};
+        {ok, Name, Data} ->
+            {async, Ref} = nkdocker:stats(Server, Name),
+            Data2 = Data#{stats_ref=>Ref},
+            Datas2 = maps:put(Name, Data2, Datas),
+            Refs2 = maps:put(Ref, Name, Refs),
+            {reply, ok, State#state{cont_datas=Datas2, stats_refs=Refs2}};
+        not_found ->
+            {reply, {error, container_not_found}, State}
+    end;
 
 handle_call(state, _From, State) ->
     {reply, State, State};
@@ -282,22 +283,28 @@ handle_cast(Msg, State) ->
 -spec handle_info(term(), #state{}) ->
     {noreply, #state{}} | {stop, term(), #state{}}.
 
-handle_info({nkdocker, Ref, Data}, #state{event_ref=Ref}=State) ->
-    {noreply, event(Data, State)};
+handle_info({nkdocker, Ref, EvData}, #state{event_ref=Ref}=State) ->
+    {noreply, event(EvData, State)};
 
-handle_info({nkdocker, Ref, Data}, #state{stats_refs=Refs}=State) ->
+handle_info({nkdocker, Ref, EvData}, #state{stats_refs=Refs}=State) ->
     case maps:find(Ref, Refs) of
-        {ok, Id} ->
-            {noreply, stats(Id, Data, State)};
+        {ok, Name} ->
+            case EvData of
+                {data, Stats} ->
+                    Event = {stats, {Name, Stats}},
+                    notify(Event, State);
+                Other ->
+                    ?LLOG(warning, "STats: ~p", [Other])
+            end;
         error ->
-            case Data of
+            case EvData of
                 {ok, <<>>} ->
                     ok;
                 _ ->
-                    ?LLOG(notice, "stats received for unknown container: ~p", [Data])
-            end,
-            {noreply, State}
-    end;
+                    ?LLOG(notice, "stats received for unknown container: ~p", [EvData])
+            end
+    end,
+    {noreply, State};
 
 handle_info(update_all, State) ->
     State2 = update_all(State),
@@ -348,6 +355,59 @@ terminate(Reason, State) ->
 %% ===================================================================
 
 %% @private
+find_monitor(Opts) ->
+    case nkdocker_server:get_conn(Opts) of
+        {ok, {Ip, #{port:=Port}}} ->
+            MonId = {Ip, Port},
+            case nklib_proc:values({?MODULE, MonId}) of
+                [] ->
+                    {ok, MonId, none};
+                [{_, Pid}] ->
+                    {ok, MonId, Pid}
+            end;
+        {error, Error} ->
+            {error, Error}
+    end.
+
+
+%% @private
+do_call(Id, Msg) ->
+    do_call(Id, Msg, 5000).
+
+
+%% @private
+do_call(Pid, Msg, Timeout) when is_pid(Pid) ->
+    nklib_util:call(Pid, Msg, Timeout);
+
+do_call(Id, Msg, Timeout) ->
+    case nklib_proc:values({?MODULE, Id}) of
+        [] ->
+            {error, unknown_monitor};
+        [{_DockerPid, Pid}] ->
+            nklib_util:call(Pid, Msg, Timeout)
+    end.
+
+
+%% @private
+-spec find_data(binary(), #state{}) ->
+    {ok, binary(), data()} | not_found.
+
+find_data(Term, #state{cont_datas=Datas, cont_ids=Ids}) ->
+    case maps:find(Term, Datas) of
+        {ok, Data} -> 
+            {ok, Term, Data};
+        error ->
+            case maps:find(Term, Ids) of
+                {ok, Name} ->
+                    {ok, Data} = maps:find(Name, Datas),
+                    {ok, Name, Data};
+                error ->
+                    not_found
+            end
+    end.
+
+
+%% @private
 event({data, Event}, State) ->
     case Event of
         #{<<"status">>:=Status, <<"id">>:=Id, <<"time">>:=Time} ->
@@ -378,30 +438,6 @@ event(Other, State) ->
 
 
 %% @private
-stats(Id, {data, Data}, #state{conts=Conts}=State) ->
-    case maps:find(Id, Conts) of
-        {ok, Cont} ->
-            Event = {stats, {Id, Data}},
-            notify(Event, State),
-            Cont2 = Cont#{stats=>Data},
-            Conts2 = maps:put(Id, Cont2, Conts),
-            State#state{conts=Conts2};
-        error ->
-            State2 = update(start, Id, State),
-            stats(Id, {data, Data}, State2)
-    end;
-
-stats(Id, {error, Error}, _State) ->
-    ?LLOG(warning, "stats returned error: ~p for: ~s", [Error, Id]),
-    error({events_error, Error});
-
-stats(Id, Other, State) ->
-    ?LLOG(warning, "unrecognized stats: ~p for: ~s", [Other, Id]),
-    State.
-
-
-
-%% @private
 notify(Data, #state{id=ServerId, regs=Regs}) ->
     lists:foreach(
         fun(Module) ->
@@ -420,43 +456,49 @@ notify(Data, #state{id=ServerId, regs=Regs}) ->
     #state{}.
 
 update(start, Id, State) ->
-    #state{server=Server, conts=Conts, stats_refs=Refs} = State,
-    case maps:is_key(Id, Conts) of
+    #state{server=Server, cont_ids=Ids, cont_datas=Datas} = State,
+    case maps:is_key(Id, Ids) of
         true ->
             State;
         false ->
-            {ok, Data} = nkdocker:inspect(Server, Id),
-            {async, Ref} = nkdocker:stats(Server, Id),
-            #{<<"Name">>:=Name} = Data,
-            #{<<"Config">>:=Config} = Data,
-            #{<<"Labels">>:=Labels} = Config,
-            Name2 = case Name of
+            {ok, Inspect} = nkdocker:inspect(Server, Id),
+            #{<<"Name">>:=Name0, <<"Config">>:=Config} = Inspect,
+            #{<<"Labels">>:=Labels, <<"Env">>:=Env, <<"Image">>:=Image} = Config,
+            Name = case Name0 of
                 <<"/", SubName/binary>> -> SubName;
-                _ -> Name
+                _ -> Name0
             end,
-            ?LLOG(info, "monitoring container ~s (~s)", [Name2, Id]),
-            notify({start, {Name2, Id, Labels}}, State),
-            Cont = #{
-                name => Name2,
+            ?LLOG(info, "monitoring container ~s (~s)", [Name, Image]),
+            % ?LLOG(info, "Inspect: ~s", [nklib_json:encode_pretty(Inspect)]),
+            Data = #{
+                name => Name,
+                id => Id,
                 labels => Labels,
-                data => Data, 
-                stats => #{},
-                stats_ref => Ref
+                env => Env,
+                image => Image
             },
-            Conts2 = maps:put(Id, Cont, Conts),
-            Refs2 = maps:put(Ref, Id, Refs),
-            State#state{conts=Conts2, stats_refs=Refs2}
+            notify({start, {Name, Image, Data}}, State),
+            Datas2 = maps:put(Name, Data, Datas),
+            Ids2 = maps:put(Id, Name, Ids),
+            State#state{cont_ids=Ids2, cont_datas=Datas2}
     end;
 
 update(die, Id, State) ->
-    #state{conts=Conts, stats_refs=Refs} = State,
-    case maps:find(Id, Conts) of
-        {ok, #{stats_ref:=Ref, name:=Name, labels:=Labels}} ->
-            ?LLOG(info, "stopping monitoring container ~s (~s)", [Name, Id]),
-            notify({stop, {Name, Id, Labels}}, State),
-            Conts2 = maps:remove(Id, Conts),
-            Refs2 = maps:remove(Ref, Refs),
-            State#state{conts=Conts2, stats_refs=Refs2};
+    #state{cont_datas=Datas, cont_ids=Ids, stats_refs=Refs} = State,
+    case maps:find(Id, Ids) of
+        {ok, Name} ->
+            {ok, #{name:=Name, image:=Image}=Data} = maps:find(Name, Datas),
+            ?LLOG(info, "stopping monitoring container ~s (~s)", [Name, Image]),
+            notify({stop, {Name, Image, Data}}, State),
+            Datas2 = maps:remove(Name, Datas),
+            Ids2 = maps:remove(Id, Ids),
+            Refs2 = case Data of
+                #{stats_ref:=Ref} ->
+                    maps:remove(Ref, Refs);
+                _ ->
+                    Refs
+            end,
+            State#state{cont_datas=Datas2, cont_ids=Ids2, stats_refs=Refs2};
         error ->
             State
     end;
@@ -466,9 +508,9 @@ update(_Status, _Id, State) ->
 
 
 %% @private
-update_all(#state{server=Server, conts=Conts}=State) ->
+update_all(#state{server=Server, cont_ids=Ids}=State) ->
     {ok, List} = nkdocker:ps(Server),
-    OldIds = maps:keys(Conts),
+    OldIds = maps:keys(Ids),
     NewIds = [Id || #{<<"Id">>:=Id} <- List],
     State2 = remove_old(OldIds--NewIds, State),
     start_new(NewIds--OldIds, State2).
@@ -478,7 +520,7 @@ update_all(#state{server=Server, conts=Conts}=State) ->
 remove_old([], State) ->
     State;
 remove_old([Id|Rest], State) ->
-    ?LLOG(notice, "detected removal of container ~s", [Id]),
+    ?LLOG(notice, "detected unexpected removal of container ~s", [Id]),
     remove_old(Rest, update(die, Id, State)).
 
 
@@ -486,7 +528,7 @@ remove_old([Id|Rest], State) ->
 start_new([], State) ->
     State;
 start_new([Id|Rest], State) ->
-    ?LLOG(notice, "detected container ~s", [Id]),
+    ?LLOG(notice, "detected unexpected start of container ~s", [Id]),
     start_new(Rest, update(start, Id, State)).
 
 
