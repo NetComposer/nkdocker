@@ -45,8 +45,8 @@
 -type notify() ::
     {docker, {Id::binary(), Status::atom(), From::binary(), Time::integer()}} |
     {stats, {Id::binary(), Data::binary()}}  |
-    {start, {Name::binary(), Image::binary(), Data::data()}} |
-    {stop, {Name::binary(), Image::binary(), Data::data()}}.
+    {start, {Name::binary(), Data::data()}} |
+    {stop, {Name::binary(), Data::data()}}.
 
 -type data() ::
     #{
@@ -474,10 +474,10 @@ update(start, Id, State) ->
                 name => Name,
                 id => Id,
                 labels => Labels,
-                env => Env,
+                env => get_env(Env, #{}),
                 image => Image
             },
-            notify({start, {Name, Image, Data}}, State),
+            notify({start, {Name, Data}}, State),
             Datas2 = maps:put(Name, Data, Datas),
             Ids2 = maps:put(Id, Name, Ids),
             State#state{cont_ids=Ids2, cont_datas=Datas2}
@@ -489,7 +489,7 @@ update(die, Id, State) ->
         {ok, Name} ->
             {ok, #{name:=Name, image:=Image}=Data} = maps:find(Name, Datas),
             ?LLOG(info, "stopping monitoring container ~s (~s)", [Name, Image]),
-            notify({stop, {Name, Image, Data}}, State),
+            notify({stop, {Name, Data}}, State),
             Datas2 = maps:remove(Name, Datas),
             Ids2 = maps:remove(Id, Ids),
             Refs2 = case Data of
@@ -530,6 +530,23 @@ start_new([], State) ->
 start_new([Id|Rest], State) ->
     ?LLOG(notice, "detected unexpected start of container ~s", [Id]),
     start_new(Rest, update(start, Id, State)).
+
+
+%% @private
+get_env([], Map) ->
+    Map;
+
+get_env([Bin|Rest], Map) ->
+    case binary:split(Bin, <<"=">>) of
+        [Name, Val] ->
+            get_env(Rest, maps:put(Name, Val, Map));
+        _ ->
+            get_env(Rest, maps:put(Bin, <<>>, Map))
+    end.
+
+
+
+
 
 
 
