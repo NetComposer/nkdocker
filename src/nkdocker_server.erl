@@ -26,7 +26,7 @@
 -export([start_link/1, start/1, stop/1, cmd/5, data/3, finish/2, create_spec/2]).
 -export([init/1, terminate/2, code_change/3, handle_call/3, handle_cast/2, 
          handle_info/2]).
--export([refresh_fun/1, get_conn/1]).
+-export([refresh_fun/1]).
 -export_type([cmd_opts/0]).
 
 -include("nkdocker.hrl").
@@ -125,22 +125,6 @@ refresh_fun(NkPort) ->
     end.
 
 
-%% @private
--spec get_conn(nkdocker:conn_opts()) ->
-    {ok, {inet:ip_address(), nkdocker:conn_opts()}} | {error, invalid_host}.
-
-get_conn(Opts) ->
-    EnvConfig = nkdocker_util:get_def_config(),
-    #{host:=Host}= Opts1 = maps:merge(EnvConfig, Opts),
-    case nkpacket_dns:ips(Host) of
-        [Ip] ->
-            {ok, {Ip, Opts1}};
-        _ ->
-            {error, invalid_host}
-    end.
-
-
-
 %% ===================================================================
 %% gen_server
 %% ===================================================================
@@ -174,12 +158,11 @@ get_conn(Opts) ->
 
 init([Opts]) ->
     process_flag(trap_exit, true),      %% Allow calls to terminate/2
-    case get_conn(Opts) of
-        {ok, {Ip, Opts1}} ->
-            #{port:=Port, proto:=Proto} = Opts1,
+    case nkdocker_util:get_conn_info(Opts) of
+        {ok, #{ip:=Ip, port:=Port, proto:=Proto}=Opts2} ->
             Conn = {nkdocker_protocol, Proto, Ip, Port},
             TLSKeys = nkpacket_util:tls_keys(),
-            TLSOpts = maps:with(TLSKeys, Opts1),
+            TLSOpts = maps:with(TLSKeys, Opts2),
             ConnOpts = TLSOpts#{
                 class => {nkdocker, self()},
                 monitor => self(), 
