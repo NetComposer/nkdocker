@@ -196,23 +196,20 @@ init([MonId, CallBack, Opts]) ->
             monitor(process, Pid),
             true = nklib_proc:reg({?MODULE, MonId}, Pid),
             nklib_proc:put(?MODULE, MonId),
-            EvOpts = case nkdocker_app:get({event_last_time, MonId}, 0) of
-                0 -> #{};
-                Time -> #{since=>Time-1}
+            Regs = nkdocker_app:get({monitor_callbacks, MonId}, []),
+            case Regs of
+                [] -> ok;
+                _ -> ?LLOG(warning, "recovered callbacks: ~p", [Regs])
             end,
-            case nkdocker:events(Pid, EvOpts) of
-                {async, Ref} ->
-                    Regs = nkdocker_app:get({monitor_callbacks, MonId}, []),
-                    case Regs of
-                        [] -> ok;
-                        _ -> ?LLOG(warning, "recovered callbacks: ~p", [Regs])
-                    end,
-                    Regs2 = nklib_util:store_value(CallBack, Regs),
-                    ?LLOG(info, "server start (~p)", [MonId]),
-                    self() ! update_all,
-                    {ok, #state{id=MonId, server=Pid, event_ref=Ref, regs=Regs2}};
-                {error, Error} ->
-                    {stop, Error}
+            Regs2 = nklib_util:store_value(CallBack, Regs),
+            nkdocker_app:put({monitor_callbacks, MonId}, Regs2),
+            State = #state{id=MonId, server=Pid, regs=Regs2},
+            self() ! update_all,
+            case start_events(State) of
+                {ok, State2} ->
+                    {ok, State2};
+                error ->
+                    {stop, events_stop}
             end;
         {error, Error} ->
             {stop, Error}
@@ -285,8 +282,14 @@ handle_cast(Msg, State) ->
     {noreply, #state{}} | {stop, term(), #state{}}.
 
 %% Why are we receiving this?
-handle_info({nkdocker, _Ref, {ok, <<>>}}, State) ->
-    {noreply, State};
+handle_info({nkdocker, Ref, {ok, <<>>}}, #state{event_ref=Ref}=State) ->
+    ?LLOG(warning, "server stopped events!", []),
+    case start_events(State) of
+        {ok, State2} ->
+            {noreply, State2};
+        error ->
+            {stop, ev_ok, State}
+    end;
 
 handle_info({nkdocker, Ref, EvData}, #state{event_ref=Ref}=State) ->
     {noreply, event(EvData, State)};
@@ -295,8 +298,11 @@ handle_info({nkdocker, Ref, EvData}, #state{stats_refs=Refs}=State) ->
     case maps:find(Ref, Refs) of
         {ok, Name} ->
             {noreply, stats(Name, EvData, State)};
+        error when EvData == {ok, <<>>} ->
+            {noreply, State};
         error ->
-            ?LLOG(warning, "unexpected event: ~p", [EvData])
+            ?LLOG(warning, "unexpected event: ~p", [EvData]),
+            {noreply, State}
     end;
 
 handle_info(update_all, State) ->
@@ -334,7 +340,6 @@ terminate(Reason, State) ->
     case Reason of
         normal ->
             ?LLOG(info, "server stop normal", []),
-            nkdocker_app:del({event_last_time, MonId}),
             nkdocker_app:del({monitor_callbacks, MonId});
         _ ->
             ?LLOG(warning, "server stop anormal: ~p", [Reason]),
@@ -383,6 +388,18 @@ do_call(MonId, Msg, Timeout) ->
 
 
 %% @private
+start_events(#state{id=MonId, server=Pid}=State) ->
+    case nkdocker:events(Pid, #{}) of
+        {async, Ref} ->
+            ?LLOG(info, "events started (~p)", [MonId]),
+            {ok, State#state{event_ref=Ref}};
+        {error, Error} ->
+            ?LLOG(warning, "could not start events: ~p", [Error]),
+            error
+    end.
+
+
+%% @private
 -spec find_data(binary(), #state{}) ->
     {ok, binary(), data()} | not_found.
 
@@ -402,7 +419,7 @@ find_data(Term, #state{cont_datas=Datas, cont_ids=Ids}) ->
 
 
 %% @private
-event({data, Event}, #state{id=MonId}=State) ->
+event({data, Event}, State) ->
     case Event of
         #{<<"status">>:=Status, <<"id">>:=Id, <<"time">>:=Time} ->
             From = maps:get(<<"from">>, Event, <<>>),
@@ -410,15 +427,12 @@ event({data, Event}, #state{id=MonId}=State) ->
             notify({docker, {Id, Status2, From, Time}}, State),
             #state{time=Last} = State,
             State2 = case Time > Last of
-                true ->
-                    nkdocker_app:put({event_last_time, MonId}, Time),
-                    State#state{time=Time};
-                false ->
-                    State
+                true -> State#state{time=Time};
+                false -> State
             end,
             update(Status2, Id, State2);
         #{<<"Action">>:=Action} ->
-            ?LLOG(info, "action: ~s", [Action]),
+            ?LLOG(info, "action without status: ~s", [Action]),
             State;
         _ ->
             ?LLOG(warning, "unrecognized event: ~p", [Event]),
@@ -444,7 +458,7 @@ stats(Name, EvData, State) ->
 
 
 %% @private
-notify(Data, #state{id=MonId, regs=Regs}) ->
+notify(Data, #state{id=MonId, regs=Regs}=State) ->
     lists:foreach(
         fun(Module) ->
             case catch Module:nkdocker_notify(MonId, Data) of
@@ -454,7 +468,8 @@ notify(Data, #state{id=MonId, regs=Regs}) ->
                     ?LLOG(warning, "error calling ~p: ~p", [Module, Error])
             end
         end,
-        Regs).
+        Regs),
+    State.
 
 
 %% @private
