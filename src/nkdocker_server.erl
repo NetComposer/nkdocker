@@ -291,7 +291,7 @@ handle_info({nkdocker, Ref, {head, Status, Headers}}, #state{cmds=Cmds}=State) -
     end;
 
 handle_info({nkdocker, Ref, {chunk, Data}}, #state{cmds=Cmds}=State) ->
-    lager:debug("Chunk: ~p", [Data]),
+    % lager:debug("Chunk: ~p", [Data]),
     case lists:keyfind(Ref, #cmd.from_ref, Cmds) of
         #cmd{mode={redirect, _}}=Cmd ->
             {noreply, parse_chunk(Data, Cmd, State)};

@@ -23,7 +23,7 @@
 -behaviour(gen_server).
 
 -export([register/1, register/2, unregister/1, unregister/2, get_docker/1]).
--export([get_all_data/1, get_data/2, start_stats/2, get_all/0]).
+-export([get_running/1, get_data/2, start_stats/2, get_all/0]).
 -export([start_link/3]).
 -export([init/1, terminate/2, code_change/3, handle_call/3,
          handle_cast/2, handle_info/2]).
@@ -31,7 +31,7 @@
 
 -define(LLOG(Type, Txt, Args), lager:Type("NkDOCKER Monitor "++Txt, Args)).
 
--define(UPDATE_TIME, 10000).
+-define(UPDATE_TIME, 30000).
 
 -callback nkdocker_notify(monitor_id(), notify()) ->
     ok.
@@ -47,16 +47,17 @@
     {docker, {Id::binary(), Status::atom(), From::binary(), Time::integer()}} |
     {stats, {Id::binary(), Data::binary()}}  |
     {start, {Name::binary(), Data::data()}} |
-    {stop, {Name::binary(), Data::data()}}.
+    {stop, {Name::binary(), Data::data()}} |
+    {ping, {Name::binary(), Data::data()}}.     % Send periodically
+
 
 -type data() ::
     #{
         name => binary(),
         id => binary(),
-        image => binary(),
-        env => map(),
         labels => map(),
-        inspect => map(),          % inspect result
+        env => map(),
+        image => binary(),
         stats => map()
     }.
 
@@ -133,11 +134,11 @@ get_docker(MonId) ->
 
 
 %% @doc Gets all containers info
--spec get_all_data(monitor_id()) ->
+-spec get_running(monitor_id()) ->
     {ok, #{binary() => data()}} | {error, term()}.
 
-get_all_data(MonId) ->
-    do_call(MonId, get_all_data).
+get_running(MonId) ->
+    do_call(MonId, get_running).
 
 
 %% @doc Get specific container info
@@ -179,8 +180,8 @@ start_link(MonId, CallBack, Opts) ->
     event_ref :: reference(),
     regs = [] :: [module()],
     time = 0 :: integer(),
-    cont_datas = #{} :: #{Name::binary() => map()},
-    cont_ids = #{} :: #{Id::binary() => Name::binary()},
+    running = #{} :: #{Name::binary() => map()},
+    running_ids = #{} :: #{Id::binary() => Name::binary()},
     stats_refs = #{} :: #{reference() => Name::binary()}
 }).
 
@@ -226,8 +227,8 @@ handle_call({register, Module}, _From, #state{id=MonId, regs=Regs}=State) ->
     nkdocker_app:put({monitor_callbacks, MonId}, Regs2),
     {reply, {ok, MonId}, State#state{regs=Regs2}};
 
-handle_call(get_all_data, _From, #state{cont_datas=Datas}=State) ->
-    {reply, {ok, Datas}, State};
+handle_call(get_running, _From, #state{running=Running}=State) ->
+    {reply, {ok, Running}, State};
 
 handle_call({get_data, Id}, _From, State) ->
     Reply = case find_data(Id, State) of
@@ -237,16 +238,16 @@ handle_call({get_data, Id}, _From, State) ->
     {reply, Reply, State};
 
 handle_call({start_stats, Id}, _From, State) ->
-    #state{server=Server, cont_datas=Datas, stats_refs=Refs} = State,
+    #state{server=Server, running=Running, stats_refs=Refs} = State,
     case find_data(Id, State) of
         {ok, _Name, #{stats_ref:=_}} -> 
             {reply, ok, State};
         {ok, Name, Data} ->
             {async, Ref} = nkdocker:stats(Server, Name),
             Data2 = Data#{stats_ref=>Ref},
-            Datas2 = maps:put(Name, Data2, Datas),
+            Running2 = maps:put(Name, Data2, Running),
             Refs2 = maps:put(Ref, Name, Refs),
-            {reply, ok, State#state{cont_datas=Datas2, stats_refs=Refs2}};
+            {reply, ok, State#state{running=Running2, stats_refs=Refs2}};
         not_found ->
             {reply, {error, container_not_found}, State}
     end;
@@ -306,7 +307,10 @@ handle_info({nkdocker, Ref, EvData}, #state{stats_refs=Refs}=State) ->
     end;
 
 handle_info(update_all, State) ->
-    State2 = update_all(State),
+    #state{running=Running} = State2 = update_all(State),
+    lists:foreach(
+        fun({Name, Data}) -> notify({ping, {Name, Data}}, State) end,
+        maps:to_list(Running)),
     erlang:send_after(?UPDATE_TIME, self(), update_all),
     {noreply, State2};
 
@@ -403,14 +407,14 @@ start_events(#state{id=MonId, server=Pid}=State) ->
 -spec find_data(binary(), #state{}) ->
     {ok, binary(), data()} | not_found.
 
-find_data(Term, #state{cont_datas=Datas, cont_ids=Ids}) ->
-    case maps:find(Term, Datas) of
+find_data(Term, #state{running=Running, running_ids=Ids}) ->
+    case maps:find(Term, Running) of
         {ok, Data} -> 
             {ok, Term, Data};
         error ->
             case maps:find(Term, Ids) of
                 {ok, Name} ->
-                    {ok, Data} = maps:find(Name, Datas),
+                    {ok, Data} = maps:find(Name, Running),
                     {ok, Name, Data};
                 error ->
                     not_found
@@ -477,7 +481,7 @@ notify(Data, #state{id=MonId, regs=Regs}=State) ->
     #state{}.
 
 update(start, Id, State) ->
-    #state{server=Server, cont_ids=Ids, cont_datas=Datas} = State,
+    #state{server=Server, running_ids=Ids, running=Running} = State,
     case maps:is_key(Id, Ids) of
         true ->
             State;
@@ -499,19 +503,19 @@ update(start, Id, State) ->
                 image => Image
             },
             notify({start, {Name, Data}}, State),
-            Datas2 = maps:put(Name, Data, Datas),
+            Running2 = maps:put(Name, Data, Running),
             Ids2 = maps:put(Id, Name, Ids),
-            State#state{cont_ids=Ids2, cont_datas=Datas2}
+            State#state{running_ids=Ids2, running=Running2}
     end;
 
 update(die, Id, State) ->
-    #state{cont_datas=Datas, cont_ids=Ids, stats_refs=Refs} = State,
+    #state{running=Running, running_ids=Ids, stats_refs=Refs} = State,
     case maps:find(Id, Ids) of
         {ok, Name} ->
-            {ok, #{name:=Name, image:=Image}=Data} = maps:find(Name, Datas),
+            {ok, #{name:=Name, image:=Image}=Data} = maps:find(Name, Running),
             ?LLOG(info, "stopping monitoring container ~s (~s)", [Name, Image]),
             notify({stop, {Name, Data}}, State),
-            Datas2 = maps:remove(Name, Datas),
+            Running2 = maps:remove(Name, Running),
             Ids2 = maps:remove(Id, Ids),
             Refs2 = case Data of
                 #{stats_ref:=Ref} ->
@@ -519,7 +523,7 @@ update(die, Id, State) ->
                 _ ->
                     Refs
             end,
-            State#state{cont_datas=Datas2, cont_ids=Ids2, stats_refs=Refs2};
+            State#state{running=Running2, running_ids=Ids2, stats_refs=Refs2};
         error ->
             State
     end;
@@ -529,7 +533,7 @@ update(_Status, _Id, State) ->
 
 
 %% @private
-update_all(#state{server=Server, cont_ids=Ids}=State) ->
+update_all(#state{server=Server, running_ids=Ids}=State) ->
     {ok, List} = nkdocker:ps(Server),
     OldIds = maps:keys(Ids),
     NewIds = [Id || #{<<"Id">>:=Id} <- List],
@@ -554,6 +558,9 @@ start_new([Id|Rest], State) ->
 
 
 %% @private
+get_env(null, Map) ->
+    Map;
+
 get_env([], Map) ->
     Map;
 
