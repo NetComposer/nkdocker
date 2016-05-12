@@ -21,7 +21,7 @@
 %% @doc Protocol behaviour
 -module(nkdocker_protocol).
 -author('Carlos Gonzalez <carlosj.gf@gmail.com>').
--behaviour(nkpacket_protocol).
+% -behaviour(nkpacket_protocol).
 
 -export([transports/1]).
 -export([conn_init/1, conn_parse/3, conn_encode/3]).

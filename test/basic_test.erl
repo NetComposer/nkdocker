@@ -64,7 +64,7 @@ conns(Pid) ->
     [] = nkpacket_connection:get_all({nkdocker, Pid, exclusive}),
    
 	{async, Ref} = nkdocker:events(Pid),
-    timer:sleep(50),
+    timer:sleep(200),
 
     % We have only the events exclusive connection
     [] = nkpacket_connection:get_all({nkdocker, Pid}),
@@ -89,12 +89,18 @@ conns(Pid) ->
 images(Pid) ->
     ?debugMsg("Building image from image1.tar (imports busybox:latest)"),
     Dir = filename:join(filename:dirname(code:priv_dir(nkdocker)), "test"),
+
+    lager:warning("DIR: ~p", [Dir]),
+
     {ok, ImageTar1} = file:read_file(filename:join(Dir, "image1.tar")),
     {ok, List1} = nkdocker:build(Pid, ImageTar1, #{t=>"nkdocker:test1", force_rm=>true}),
     [#{<<"stream">>:=<<"Successfully built ", Id1:12/binary, "\n">>}|_] = 
         lists:reverse(List1),
     {ok, #{<<"Id">>:=FullId1}=Img1} = nkdocker:inspect_image(Pid, Id1),
-    <<Id1:12/binary, _/binary>> = FullId1,
+    case FullId1 of
+        <<Id1:12/binary, _/binary>> -> ok;
+        <<"sha256:", Id1:12/binary, _/binary>> -> ok
+    end,
     % lager:warning("Id: ~p, FullId1: ~p", [Id1, FullId1]),
 
     {ok, Img1} = nkdocker:inspect_image(Pid, "nkdocker:test1"),
