@@ -23,7 +23,7 @@
 -export([add/2]).
 
 add(Name, Bin) ->
-    Mtime0 = calendar:now_to_local_time(now()),
+    Mtime0 = calendar:now_to_local_time(os:timestamp()),
     Mtime = posix_time(erlang:localtime_to_universaltime(Mtime0)),
     {Prefix,Suffix} = split_filename(Name),
     H0 = [
