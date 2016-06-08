@@ -99,7 +99,7 @@ register(CallBack, Opts) ->
     end.
 
 
-%% @doc Equivalent to runegister(CallBack, #{})
+%% @doc Equivalent to unregister(CallBack, #{})
 -spec unregister(module()) ->
     ok | {error, term()}.
 
