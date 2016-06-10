@@ -205,7 +205,7 @@ init([MonId, CallBack, Opts]) ->
             Regs2 = nklib_util:store_value(CallBack, Regs),
             nkdocker_app:put({monitor_callbacks, MonId}, Regs2),
             State = #state{id=MonId, server=Pid, regs=Regs2},
-            self() ! update_all,
+            self() ! ping_all,
             case start_events(State) of
                 {ok, State2} ->
                     {ok, State2};
@@ -225,7 +225,8 @@ init([MonId, CallBack, Opts]) ->
 handle_call({register, Module}, _From, #state{id=MonId, regs=Regs}=State) ->
     Regs2 = nklib_util:store_value(Module, Regs),
     nkdocker_app:put({monitor_callbacks, MonId}, Regs2),
-    {reply, {ok, MonId}, State#state{regs=Regs2}};
+    State2 = ping_all(State#state{regs=Regs2}),
+    {reply, {ok, MonId}, State2};
 
 handle_call(get_running, _From, #state{running=Running}=State) ->
     {reply, {ok, Running}, State};
@@ -306,12 +307,9 @@ handle_info({nkdocker, Ref, EvData}, #state{stats_refs=Refs}=State) ->
             {noreply, State}
     end;
 
-handle_info(update_all, State) ->
-    #state{running=Running} = State2 = update_all(State),
-    lists:foreach(
-        fun({Name, Data}) -> notify({ping, {Name, Data}}, State) end,
-        maps:to_list(Running)),
-    erlang:send_after(?UPDATE_TIME, self(), update_all),
+handle_info(ping_all, State) ->
+    State2 = ping_all(State),
+    erlang:send_after(?UPDATE_TIME, self(), ping_all),
     {noreply, State2};
 
 handle_info({'DOWN', _Ref, process, Pid, Reason}, #state{server=Pid}=State) ->
@@ -530,6 +528,15 @@ update(die, Id, State) ->
 
 update(_Status, _Id, State) ->
     State.
+
+
+%% @private
+ping_all(State) ->
+    #state{running=Running} = State2 = update_all(State),
+    lists:foreach(
+        fun({Name, Data}) -> notify({ping, {Name, Data}}, State) end,
+        maps:to_list(Running)),
+    State2.
 
 
 %% @private
