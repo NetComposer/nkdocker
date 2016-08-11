@@ -147,6 +147,7 @@ refresh_fun(NkPort) ->
 -record(state, {
     conn :: nkpacket:raw_connection(),
     conn_opts :: map(),
+    host :: binary(),
     vsn :: binary(),
     cmds = [] :: [#cmd{}]
 }).
@@ -169,12 +170,18 @@ init([Opts]) ->
                 user => {notify, self()}, 
                 idle_timeout => ?IDLE_TIMEOUT
             },
-            lager:debug("NkDOCKER connecting to ~p, (~p)", [Conn, ConnOpts]),
+            Host = list_to_binary([
+                nklib_util:to_host(Ip),
+                <<":">>,
+                nklib_util:to_binary(Port)
+            ]),
+            lager:info("NkDOCKER connecting to ~s, (~p)", [Host, ConnOpts]),
             case nkpacket:connect(Conn, ConnOpts) of
                 {ok, _Pid} ->
                     State = #state{
                         conn = Conn,
                         conn_opts = ConnOpts,
+                        host = Host,
                         cmds = []
                     },
                     case get_version(State) of
@@ -373,16 +380,9 @@ terminate(_Reason, _State) ->
 -spec get_version(#state{}) ->
     {ok, binary()} | {stop, term()}.
 
-get_version(#state{conn=Conn, conn_opts=ConnOpts}) ->
+get_version(#state{conn=Conn, conn_opts=ConnOpts}=State) ->
     Ref = make_ref(),
-    Msg = {
-        http, 
-        Ref,
-        <<"GET">>, 
-        <<"/version">>,
-        [{<<"connection">>, <<"keep-alive">>}],
-        <<>>
-    },
+    Msg = {http, Ref, <<"GET">>, <<"/version">>, headers1(State), <<>>},
     case nkpacket:send(Conn, Msg, ConnOpts) of
         {ok, _} ->
             case
@@ -427,7 +427,7 @@ send(Method, Path, Body, Opts, From, State) ->
         shared -> 
             {
                 ConnOpts,
-                [{<<"connection">>, <<"keep-alive">>}]
+                headers1(State)
             };
         _ -> 
             {
@@ -436,7 +436,7 @@ send(Method, Path, Body, Opts, From, State) ->
                     idle_timeout => maps:get(timeout, Opts, ?IDLE_TIMEOUT),
                     force_new => true
                 },
-                []
+                headers2(State)
             }
     end,
     ConnOpts2 = case Opts of
@@ -621,4 +621,22 @@ decode(Data, #cmd{ct=json}) ->
 
 decode(Data, _) ->
     Data.
+
+
+%% @private
+headers1(State) ->
+    [
+        {<<"Connection">>, <<"keep-alive">>} |
+        headers2(State)
+    ].
+
+
+%% @private
+headers2(#state{host=Host}) ->
+    [
+        {<<"Host">>, Host},
+        {<<"User-Agent">>, <<"nkdocker/develop">>},
+        {<<"Accept">>, <<"*/*">>}
+    ].
+
 
