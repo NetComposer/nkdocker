@@ -44,7 +44,6 @@
 -define(HUB, <<"https://index.docker.io/v1/">>).
 
 
-
 %% ===================================================================
 %% Types
 %% ===================================================================
@@ -248,8 +247,7 @@ events(Pid) ->
 
 events(Pid, Opts) ->
 	Path = make_path(<<"/events">>, get_filters(Opts), [filters, since, until]),
-	DockerOpts = #{chunks=>true, async=>true, force_new=>true, 
-			       timeout=>5000, refresh=>true},
+	DockerOpts = #{chunks=>true, async=>true, force_new=>true, timeout=>0},
 	get(Pid, Path, DockerOpts).
 
 
@@ -389,7 +387,7 @@ logs(Pid, Container, Opts) ->
 	Path2 = make_path(Path1, Opts, UrlOpts),
 	case Opts of 
 		#{follow:=true} ->
-			get(Pid, Path2, #{chunks=>true, async=>true, timeout=>5000, refresh=>true});
+			get(Pid, Path2, #{chunks=>true, async=>true, timeout=>0});
 		#{async:=true} ->
 			get(Pid, Path2, add_timeout(Opts, #{chunks=>true, async=>true}));
 		_ ->

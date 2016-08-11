@@ -26,7 +26,6 @@
 -export([start_link/1, start/1, stop/1, cmd/5, data/3, finish/2, create_spec/2]).
 -export([init/1, terminate/2, code_change/3, handle_call/3, handle_cast/2, 
          handle_info/2]).
--export([refresh_fun/1]).
 -export_type([cmd_opts/0]).
 
 -include("nkdocker.hrl").
@@ -38,13 +37,12 @@
         headers => [{binary(), binary()}],
         redirect => string(),           % Send to file
         timeout => pos_integer(),       % Reply and closes connection if reached
-        refresh => boolean(),           % Automatic refresh
+        % refresh => boolean(),           % Automatic refresh
         chunks => boolean()             % Send data in chunks
     }.
 
 
--define(IDLE_TIMEOUT, 5000).
-
+-define(TIMEOUT, 5000).
 
 %% ===================================================================
 %% Public
@@ -82,7 +80,7 @@ stop(Pid) ->
 
 cmd(Pid, Verb, Path, Body, Opts) ->
     % Path1 = <<"/v1.17", Path/binary>>,
-    Timeout = maps:get(timeout, Opts, 5000),
+    Timeout = max(maps:get(timeout, Opts, 5000), 5000),
     case nklib_util:call(Pid, {cmd, Verb, Path, Body, Opts}, Timeout) of
         {error, {exit, {{timeout, _}, _}}} -> {error, call_timeout};
         Other -> Other
@@ -116,13 +114,13 @@ create_spec(Pid, Opts) ->
     end.
 
 
-%% @private
-refresh_fun(NkPort) ->
-    % lager:debug("Refreshing connection"),
-    case nkpacket_connection_lib:raw_send(NkPort, <<"\r\n">>) of
-        ok -> true;
-        _ -> false
-    end.
+% %% @private
+% refresh_fun(NkPort) ->
+%     lager:warning("Refreshing connection"),
+%     case nkpacket_connection_lib:raw_send(NkPort, <<"\r\n">>) of
+%         ok -> true;
+%         _ -> false
+%     end.
 
 
 %% ===================================================================
@@ -168,7 +166,7 @@ init([Opts]) ->
                 class => {nkdocker, self()},
                 monitor => self(), 
                 user => {notify, self()}, 
-                idle_timeout => ?IDLE_TIMEOUT
+                idle_timeout => ?TIMEOUT
             },
             Host = list_to_binary([
                 nklib_util:to_host(Ip),
@@ -433,18 +431,19 @@ send(Method, Path, Body, Opts, From, State) ->
             {
                 ConnOpts#{
                     class => {nkdocker, self(), exclusive},
-                    idle_timeout => maps:get(timeout, Opts, ?IDLE_TIMEOUT),
+                    idle_timeout => maps:get(timeout, Opts, ?TIMEOUT),
                     force_new => true
                 },
                 headers2(State)
             }
     end,
-    ConnOpts2 = case Opts of
-        #{refresh:=true} -> 
-            ConnOpts1#{refresh_fun=>fun refresh_fun/1};
-        _ -> 
-            ConnOpts1
-    end,
+    % ConnOpts2 = case Opts of
+    %     #{refresh:=true} -> 
+    %         ConnOpts1#{refresh_fun=>fun ?MODULE:refresh_fun/1};
+    %     _ -> 
+    %         ConnOpts1
+    % end,
+    ConnOpts2 = ConnOpts1,
     Hds2 = case Opts of
         #{headers:=Headers} -> 
             Hds1 ++ Headers;
