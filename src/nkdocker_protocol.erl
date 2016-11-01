@@ -1,6 +1,6 @@
 %% -------------------------------------------------------------------
 %%
-%% Copyright (c) 2015 Carlos Gonzalez Florido.  All Rights Reserved.
+%% Copyright (c) 2016 Carlos Gonzalez Florido.  All Rights Reserved.
 %%
 %% This file is provided to you under the Apache License,
 %% Version 2.0 (the "License"); you may not use this file
@@ -54,7 +54,7 @@ transports(_) -> [tls].
 	{ok, #state{}}.
 
 conn_init(NkPort) ->
-	{ok, {notify, Pid}} = nkpacket:get_user(NkPort),
+	{ok, _SrvId, {notify, Pid}} = nkpacket:get_user(NkPort),
 	% lager:notice("Protocol CONN init: ~p (~p)", [NkPort, self()]),
 	{ok, #state{notify=Pid}}.
 

@@ -57,7 +57,7 @@ transports() -> [tcp].
 
 conn_init(Port) ->
     case nkpacket:get_user(Port) of
-        {ok, #{conn:=Conn, conn_opts:=ConnOpts}} ->
+        {ok, _SrvId, #{conn:=Conn, conn_opts:=ConnOpts}} ->
             ConnOpts1 = ConnOpts#{force_new=>true, user=>secondary},
             lager:debug("PROXY Starting Connection to ~p, ~p", [Conn, ConnOpts]),
             case nkpacket:connect(?MODULE, Conn, ConnOpts1) of

@@ -1,6 +1,6 @@
 %% -------------------------------------------------------------------
 %%
-%% Copyright (c) 2015 Carlos Gonzalez Florido.  All Rights Reserved.
+%% Copyright (c) 2016 Carlos Gonzalez Florido.  All Rights Reserved.
 %%
 %% This file is provided to you under the Apache License,
 %% Version 2.0 (the "License"); you may not use this file
@@ -23,6 +23,7 @@
 -author('Carlos Gonzalez <carlosj.gf@gmail.com>').
 -behaviour(application).
 
+-export([get/1, get/2, put/2, del/1]).
 -export([start/0, start/2, stop/1]).
 -export([get_env/2]).
 
@@ -53,9 +54,9 @@ start(_Type, _Args) ->
     _ = code:ensure_loaded(nkdocker_protocol),
     {ok, Pid} = nkdocker_sup:start_link(),
     {ok, Vsn} = application:get_key(nkdocker, vsn),
-    lager:notice("NkDOCKER v~s has started.", [Vsn]),
+    lager:info("NkDOCKER v~s has started.", [Vsn]),
     ConnOpts = get_config(),
-    lager:notice("Default config: ~p", [ConnOpts]),
+    lager:info("Default config: ~p", [ConnOpts]),
     application:set_env(?APP, conn_config, ConnOpts),
     {ok, Pid}.
 
@@ -132,3 +133,15 @@ get_env(Key, Default) ->
     application:get_env(?APP, Key, Default).
 
 
+%% Configuration access
+get(Key) ->
+    nklib_config:get(?APP, Key).
+
+get(Key, Default) ->
+    nklib_config:get(?APP, Key, Default).
+
+put(Key, Val) ->
+    nklib_config:put(?APP, Key, Val).
+
+del(Key) ->
+    nklib_config:del(?APP, Key).

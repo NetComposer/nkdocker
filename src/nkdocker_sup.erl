@@ -1,6 +1,6 @@
 %% -------------------------------------------------------------------
 %%
-%% Copyright (c) 2015 Carlos Gonzalez Florido.  All Rights Reserved.
+%% Copyright (c) 2016 Carlos Gonzalez Florido.  All Rights Reserved.
 %%
 %% This file is provided to you under the Apache License,
 %% Version 2.0 (the "License"); you may not use this file
@@ -23,7 +23,28 @@
 -author('Carlos Gonzalez <carlosj.gf@gmail.com>').
 -behaviour(supervisor).
 
--export([init/1, start_link/0]).
+-export([start_monitor/3, init/1, start_link/0]).
+
+start_monitor(Id, CallBack, Opts) ->
+	Spec = {
+        {monitor, Id},
+        {nkdocker_monitor, start_link, [Id, CallBack, Opts]},
+        transient,
+        5000,
+        worker,
+        [nkdocker_monitor]
+    },
+	case supervisor:start_child(?MODULE, Spec) of
+        {ok, Pid} -> 
+            {ok, Pid};
+        {error, already_present} ->
+            ok = supervisor:delete_child(?MODULE, {monitor, Id}),
+            start_monitor(Id, CallBack, Opts);
+        {error, {already_started, Pid}} -> 
+            {ok, Pid};
+        {error, Error} -> 
+            {error, Error}
+    end.
 
 
 %% @private

@@ -1,6 +1,6 @@
 %% -------------------------------------------------------------------
 %%
-%% Copyright (c) 2015 Carlos Gonzalez Florido.  All Rights Reserved.
+%% Copyright (c) 2016 Carlos Gonzalez Florido.  All Rights Reserved.
 %%
 %% This file is provided to you under the Apache License,
 %% Version 2.0 (the "License"); you may not use this file
@@ -42,7 +42,6 @@
 -import(nklib_util, [to_binary/1]).
 
 -define(HUB, <<"https://index.docker.io/v1/">>).
-
 
 
 %% ===================================================================
@@ -248,8 +247,7 @@ events(Pid) ->
 
 events(Pid, Opts) ->
 	Path = make_path(<<"/events">>, get_filters(Opts), [filters, since, until]),
-	DockerOpts = #{chunks=>true, async=>true, force_new=>true, 
-			       timeout=>5000, refresh=>true},
+	DockerOpts = #{chunks=>true, async=>true, force_new=>true, timeout=>0},
 	get(Pid, Path, DockerOpts).
 
 
@@ -389,7 +387,7 @@ logs(Pid, Container, Opts) ->
 	Path2 = make_path(Path1, Opts, UrlOpts),
 	case Opts of 
 		#{follow:=true} ->
-			get(Pid, Path2, #{chunks=>true, async=>true, timeout=>5000, refresh=>true});
+			get(Pid, Path2, #{chunks=>true, async=>true, timeout=>0});
 		#{async:=true} ->
 			get(Pid, Path2, add_timeout(Opts, #{chunks=>true, async=>true}));
 		_ ->

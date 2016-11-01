@@ -1,6 +1,6 @@
 %% -------------------------------------------------------------------
 %%
-%% Copyright (c) 2015 Carlos Gonzalez Florido.  All Rights Reserved.
+%% Copyright (c) 2016 Carlos Gonzalez Florido.  All Rights Reserved.
 %%
 %% This file is provided to you under the Apache License,
 %% Version 2.0 (the "License"); you may not use this file
@@ -26,7 +26,6 @@
 -export([start_link/1, start/1, stop/1, cmd/5, data/3, finish/2, create_spec/2]).
 -export([init/1, terminate/2, code_change/3, handle_call/3, handle_cast/2, 
          handle_info/2]).
--export([refresh_fun/1]).
 -export_type([cmd_opts/0]).
 
 -include("nkdocker.hrl").
@@ -38,12 +37,12 @@
         headers => [{binary(), binary()}],
         redirect => string(),           % Send to file
         timeout => pos_integer(),       % Reply and closes connection if reached
-        refresh => boolean(),           % Automatic refresh
+        % refresh => boolean(),           % Automatic refresh
         chunks => boolean()             % Send data in chunks
     }.
 
--define(CMD_TIMEOUT, 5000).
 
+-define(TIMEOUT, 5000).
 
 %% ===================================================================
 %% Public
@@ -81,9 +80,9 @@ stop(Pid) ->
 
 cmd(Pid, Verb, Path, Body, Opts) ->
     % Path1 = <<"/v1.17", Path/binary>>,
-    Timeout = maps:get(timeout, Opts, ?CMD_TIMEOUT),
-    case catch gen_server:call(Pid, {cmd, Verb, Path, Body, Opts}, Timeout) of
-        {'EXIT', _} -> {error, process_failed};
+    Timeout = max(maps:get(timeout, Opts, 5000), 5000),
+    case nklib_util:call(Pid, {cmd, Verb, Path, Body, Opts}, Timeout) of
+        {error, {exit, {{timeout, _}, _}}} -> {error, call_timeout};
         Other -> Other
     end.
 
@@ -93,10 +92,7 @@ cmd(Pid, Verb, Path, Body, Opts) ->
     ok | {error, term()}.
 
 data(Pid, Ref, Data) ->
-    case catch gen_server:call(Pid, {data, Ref, Data}, ?CMD_TIMEOUT) of
-        {'EXIT', _} -> {error, process_failed};
-        Other -> Other
-    end.
+    nklib_util:call(Pid, {data, Ref, Data}).
 
 
 %% @doc Finished an asynchronous command
@@ -104,10 +100,7 @@ data(Pid, Ref, Data) ->
     ok | {error, term()}.
 
 finish(Pid, Ref) ->
-    case catch gen_server:call(Pid, {finish_async, Ref}, infinity) of
-        {'EXIT', _} -> {error, process_failed};
-        Other -> Other
-    end.
+    nklib_util:call(Pid, {finish_async, Ref}).
 
 
 %% @doc Generates creation options
@@ -115,20 +108,19 @@ finish(Pid, Ref) ->
     {ok, map()} | {error, term()}.
 
 create_spec(Pid, Opts) ->
-    case catch gen_server:call(Pid, get_vsn, infinity) of
+    case nklib_util:call(Pid, get_vsn) of
         {ok, Vsn} -> nkdocker_opts:create_spec(Vsn, Opts);
-        {'EXIT', _} -> {error, process_failed}
+        {error, Error} -> {error, Error}
     end.
 
 
-%% @private
-refresh_fun(NkPort) ->
-    % lager:debug("Refreshing connection"),
-    case nkpacket_connection_lib:raw_send(NkPort, <<"\r\n">>) of
-        ok -> true;
-        _ -> false
-    end.
-
+% %% @private
+% refresh_fun(NkPort) ->
+%     lager:warning("Refreshing connection"),
+%     case nkpacket_connection_lib:raw_send(NkPort, <<"\r\n">>) of
+%         ok -> true;
+%         _ -> false
+%     end.
 
 
 %% ===================================================================
@@ -153,6 +145,7 @@ refresh_fun(NkPort) ->
 -record(state, {
     conn :: nkpacket:raw_connection(),
     conn_opts :: map(),
+    host :: binary(),
     vsn :: binary(),
     cmds = [] :: [#cmd{}]
 }).
@@ -164,26 +157,29 @@ refresh_fun(NkPort) ->
 
 init([Opts]) ->
     process_flag(trap_exit, true),      %% Allow calls to terminate/2
-    {ok, EnvConfig} = application:get_env(nkdocker, conn_config),
-    Opts1 = maps:merge(EnvConfig, Opts),
-    #{host:=Host, port:=Port, proto:=Proto} = Opts1,
-    case nkpacket_dns:ips(Host) of
-        [Ip] ->
+    case nkdocker_util:get_conn_info(Opts) of
+        {ok, #{ip:=Ip, port:=Port, proto:=Proto}=Opts2} ->
             Conn = {nkdocker_protocol, Proto, Ip, Port},
             TLSKeys = nkpacket_util:tls_keys(),
-            TLSOpts = maps:with(TLSKeys, Opts1),
+            TLSOpts = maps:with(TLSKeys, Opts2),
             ConnOpts = TLSOpts#{
-                srv_id => {nkdocker, self()},
+                class => {nkdocker, self()},
                 monitor => self(), 
                 user => {notify, self()}, 
-                idle_timeout => ?CMD_TIMEOUT
+                idle_timeout => ?TIMEOUT
             },
-            lager:debug("Connecting to ~p, (~p)", [Conn, ConnOpts]),
+            Host = list_to_binary([
+                nklib_util:to_host(Ip),
+                <<":">>,
+                nklib_util:to_binary(Port)
+            ]),
+            lager:info("NkDOCKER connecting to ~s, (~p)", [Host, ConnOpts]),
             case nkpacket:connect(Conn, ConnOpts) of
                 {ok, _Pid} ->
                     State = #state{
                         conn = Conn,
                         conn_opts = ConnOpts,
+                        host = Host,
                         cmds = []
                     },
                     case get_version(State) of
@@ -197,8 +193,8 @@ init([Opts]) ->
                 {error, Error} ->
                     {stop, {connection_error, Error}}
             end;
-        _ ->
-            {stop, invalid_host}
+        {error, Error} ->
+            {stop, Error}
     end.
 
 
@@ -300,7 +296,7 @@ handle_info({nkdocker, Ref, {head, Status, Headers}}, #state{cmds=Cmds}=State) -
     end;
 
 handle_info({nkdocker, Ref, {chunk, Data}}, #state{cmds=Cmds}=State) ->
-    lager:debug("Chunk: ~p", [Data]),
+    % lager:debug("Chunk: ~p", [Data]),
     case lists:keyfind(Ref, #cmd.from_ref, Cmds) of
         #cmd{mode={redirect, _}}=Cmd ->
             {noreply, parse_chunk(Data, Cmd, State)};
@@ -382,23 +378,17 @@ terminate(_Reason, _State) ->
 -spec get_version(#state{}) ->
     {ok, binary()} | {stop, term()}.
 
-get_version(#state{conn=Conn, conn_opts=ConnOpts}) ->
+get_version(#state{conn=Conn, conn_opts=ConnOpts}=State) ->
     Ref = make_ref(),
-    Msg = {
-        http, 
-        Ref,
-        <<"GET">>, 
-        <<"/version">>,
-        [{<<"connection">>, <<"keep-alive">>}],
-        <<>>
-    },
+    Msg = {http, Ref, <<"GET">>, <<"/version">>, headers1(State), <<>>},
     case nkpacket:send(Conn, Msg, ConnOpts) of
         {ok, _} ->
             case
                 receive 
                     {nkdocker, Ref, {head, 200, _}} ->
                         receive
-                            {nkdocker, Ref, {body, Data}} -> nklib_json:decode(Data)
+                            {nkdocker, Ref, {body, Data}} -> 
+                                nklib_json:decode(Data)
                         after
                             5000 -> timeout
                         end
@@ -411,7 +401,7 @@ get_version(#state{conn=Conn, conn_opts=ConnOpts}) ->
                 timeout ->
                     {error, connect_timeout};
                 Other ->
-                    {error, {invalid_return, Other}}
+                    {error, {invalid_return_from_get_version, Other}}
             end;
         {error, Error} ->
             {error, Error}
@@ -435,24 +425,25 @@ send(Method, Path, Body, Opts, From, State) ->
         shared -> 
             {
                 ConnOpts,
-                [{<<"connection">>, <<"keep-alive">>}]
+                headers1(State)
             };
         _ -> 
             {
                 ConnOpts#{
-                    srv_id => {nkdocker, self(), exclusive},
-                    idle_timeout => maps:get(timeout, Opts, ?CMD_TIMEOUT),
+                    class => {nkdocker, self(), exclusive},
+                    idle_timeout => maps:get(timeout, Opts, ?TIMEOUT),
                     force_new => true
                 },
-                []
+                headers2(State)
             }
     end,
-    ConnOpts2 = case Opts of
-        #{refresh:=true} -> 
-            ConnOpts1#{refresh_fun=>fun refresh_fun/1};
-        _ -> 
-            ConnOpts1
-    end,
+    % ConnOpts2 = case Opts of
+    %     #{refresh:=true} -> 
+    %         ConnOpts1#{refresh_fun=>fun ?MODULE:refresh_fun/1};
+    %     _ -> 
+    %         ConnOpts1
+    % end,
+    ConnOpts2 = ConnOpts1,
     Hds2 = case Opts of
         #{headers:=Headers} -> 
             Hds1 ++ Headers;
@@ -629,4 +620,22 @@ decode(Data, #cmd{ct=json}) ->
 
 decode(Data, _) ->
     Data.
+
+
+%% @private
+headers1(State) ->
+    [
+        {<<"Connection">>, <<"keep-alive">>} |
+        headers2(State)
+    ].
+
+
+%% @private
+headers2(#state{host=Host}) ->
+    [
+        {<<"Host">>, Host},
+        {<<"User-Agent">>, <<"nkdocker/develop">>},
+        {<<"Accept">>, <<"*/*">>}
+    ].
+
 
