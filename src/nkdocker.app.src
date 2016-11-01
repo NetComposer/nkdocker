@@ -1,6 +1,6 @@
 {application, nkdocker, [
     {description, "NkDOCKER Docker Interface"},
-    {vsn, "master"},
+    {vsn, "v0.118.3"},
     {modules, []},
     {registered, []},
     {mod, {nkdocker_app, []}},

@@ -94,7 +94,10 @@ images(Pid) ->
     [#{<<"stream">>:=<<"Successfully built ", Id1:12/binary, "\n">>}|_] = 
         lists:reverse(List1),
     {ok, #{<<"Id">>:=FullId1}=Img1} = nkdocker:inspect_image(Pid, Id1),
-    <<Id1:12/binary, _/binary>> = FullId1,
+    case FullId1 of
+        <<"sha256:", Id1:12/binary, _/binary>> -> ok;
+        <<Id1:12/binary, _/binary>> -> ok
+    end,
     % lager:warning("Id: ~p, FullId1: ~p", [Id1, FullId1]),
 
     {ok, Img1} = nkdocker:inspect_image(Pid, "nkdocker:test1"),
