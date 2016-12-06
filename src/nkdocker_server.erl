@@ -44,6 +44,19 @@
 
 -define(TIMEOUT, 5000).
 
+
+%% To get debug info, start with either debug=>true or with a srv_id that
+%% is included in a service 'debug' key (debug=>[nkdocker_server])
+
+-define(DEBUG(Txt, Args),
+    case get(nkdocker_debug) of
+        true -> ?LLOG(debug, Txt, Args);
+        _ -> ok
+    end).
+
+-define(LLOG(Type, Txt, Args), lager:Type("NkDOCKER "++Txt, Args)).
+
+
 %% ===================================================================
 %% Public
 %% ===================================================================
@@ -157,6 +170,9 @@ create_spec(Pid, Opts) ->
 
 init([Opts]) ->
     process_flag(trap_exit, true),      %% Allow calls to terminate/2
+    nklib_proc:put(?MODULE),
+    Debug = maps:get(debug, Opts, false),
+    put(nkdocker_debug, Debug),
     case nkdocker_util:get_conn_info(Opts) of
         {ok, #{ip:=Ip, port:=Port, proto:=Proto}=Opts2} ->
             Conn = {nkdocker_protocol, Proto, Ip, Port},
@@ -166,14 +182,15 @@ init([Opts]) ->
                 class => {nkdocker, self()},
                 monitor => self(), 
                 user => {notify, self()}, 
-                idle_timeout => ?TIMEOUT
+                idle_timeout => ?TIMEOUT,
+                debug => Debug
             },
             Host = list_to_binary([
                 nklib_util:to_host(Ip),
                 <<":">>,
                 nklib_util:to_binary(Port)
             ]),
-            lager:info("NkDOCKER connecting to ~s, (~p)", [Host, ConnOpts]),
+            ?DEBUG("connecting to ~s, (~p)", [Host, ConnOpts]),
             case nkpacket:connect(Conn, ConnOpts) of
                 {ok, _Pid} ->
                     State = #state{
@@ -254,6 +271,9 @@ handle_call({finish_async, Ref}, _, #state{cmds=Cmds}=State) ->
 handle_call(get_vsn, _From, #state{vsn=Vsn}=State) ->
     {reply, {ok, Vsn}, State};
 
+handle_call(a, _From, State) ->
+    {reply, {ok, get(nkdocker_server_debug)}, State};
+
 handle_call(get_state, _From, State) ->
     {reply, State, State};
 
@@ -279,7 +299,7 @@ handle_cast(Msg, State) ->
     {noreply, #state{}} | {stop, term(), #state{}}.
 
 handle_info({nkdocker, Ref, {head, Status, Headers}}, #state{cmds=Cmds}=State) ->
-    lager:debug("Head: ~p, ~p", [Status, Headers]),
+    ?DEBUG("head: ~p, ~p", [Status, Headers]),
     case lists:keyfind(Ref, #cmd.from_ref, Cmds) of
         #cmd{}=Cmd  ->
             CT = case nklib_util:get_value(<<"content-type">>, Headers) of
@@ -291,12 +311,12 @@ handle_info({nkdocker, Ref, {head, Status, Headers}}, #state{cmds=Cmds}=State) -
             Cmds1 = lists:keystore(Ref, #cmd.from_ref, Cmds, Cmd1),
             {noreply, State#state{cmds=Cmds1}};
         false ->
-            lager:warning("Received unexpected head!"),
+            ?LLOG(warning, "Received unexpected head!", []),
             {noreply, State}
     end;
 
 handle_info({nkdocker, Ref, {chunk, Data}}, #state{cmds=Cmds}=State) ->
-    % lager:debug("Chunk: ~p", [Data]),
+    % ?DEBUG("chunk: ~p", [Data]),
     case lists:keyfind(Ref, #cmd.from_ref, Cmds) of
         #cmd{mode={redirect, _}}=Cmd ->
             {noreply, parse_chunk(Data, Cmd, State)};
@@ -312,19 +332,19 @@ handle_info({nkdocker, Ref, {chunk, Data}}, #state{cmds=Cmds}=State) ->
         #cmd{}=Cmd ->
             {noreply, parse_chunk(Data, Cmd, State)};
     false ->
-        lager:warning("Received unexpected chunk!"),
+        ?LLOG(warning, "Received unexpected chunk!", []),
         {noreply, State}
     end;
 
 handle_info({nkdocker, Ref, {body, Body}}, #state{cmds=Cmds}=State) ->
-    lager:debug("Body: ~p", [Body]),
+    ?DEBUG("body: ~p", [Body]),
     case lists:keyfind(Ref, #cmd.from_ref, Cmds) of
         #cmd{status=Status}=Cmd when Status>=200, Status<300 ->
             {noreply, parse_body(Body, Cmd, State)};
         #cmd{status=Status}=Cmd ->
             {noreply, send_stop(Cmd, {error, {get_error(Status), Body}}, State)};
         false ->
-            lager:warning("Received unexpected body!"),
+            ?LLOG(warning, "Received unexpected body!", []),
             {noreply, State}
     end;
 
@@ -373,6 +393,7 @@ terminate(_Reason, _State) ->
 %% ===================================================================
 %% Private
 %% ===================================================================
+
 
 %% @private
 -spec get_version(#state{}) ->
@@ -452,7 +473,7 @@ send(Method, Path, Body, Opts, From, State) ->
     end,
     {FromPid, FromRef} = From,
     Msg = {http, FromRef, Method, Path, Hds2, Body},
-    lager:debug("NkDOCKER SEND: ~p ~p", [Msg, ConnOpts2]),
+    ?DEBUG("send ~p ~p", [Msg, ConnOpts2]),
     case nkpacket:send(Conn, Msg, ConnOpts2) of
         {ok, ConnPid} ->
             Cmd1 = #cmd{
@@ -637,5 +658,7 @@ headers2(#state{host=Host}) ->
         {<<"User-Agent">>, <<"nkdocker/develop">>},
         {<<"Accept">>, <<"*/*">>}
     ].
+
+
 
 

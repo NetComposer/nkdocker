@@ -560,7 +560,7 @@ remove_old([Id|Rest], State) ->
 start_new([], State) ->
     State;
 start_new([Id|Rest], State) ->
-    ?LLOG(notice, "detected unexpected start of container ~s", [Id]),
+    ?LLOG(info, "detected unexpected start of container ~s", [Id]),
     start_new(Rest, update(start, Id, State)).
 
 

@@ -55,7 +55,8 @@
 		host => text(),					% Default "127.0.0.1"
 		port => inet:port_number(),		% Default 2375
 		proto => tcp | tls,				% Default tcp
-		?TLS_TYPES
+		?TLS_TYPES,
+		debug => boolean()
 	}.
 
 -type docker_device() ::
@@ -510,7 +511,9 @@ kill(Pid, Container) ->
 	ok | {error, error()}.
 
 kill(Pid, Container, Opts) ->
-	Path1 = list_to_binary([<<"/containers/">>, Container, <<"/kill">>]),
+	Path1 = list_to_binary([
+		<<"/containers/">>, nklib_util:to_binary(Container), <<"/kill">>
+	]),
 	Path2 = make_path(Path1, Opts, [signal]),
 	case post(Pid, Path2, #{force_new=>true}) of
 		{ok, _} -> ok;
